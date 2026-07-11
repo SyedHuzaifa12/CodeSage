@@ -72,6 +72,10 @@ docs/
 .DS_Store
 Thumbs.db
 
+# ===== Claude Code =====
+.claude/
+CLAUDE.md
+
 # ===== Misc =====
 *.bak
 *.tmp
