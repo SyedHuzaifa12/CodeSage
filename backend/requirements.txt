@@ -1,3 +1,8 @@
 fastapi
 uvicorn[standard]
 python-dotenv
+pydantic-settings
+sqlalchemy[asyncio]
+asyncpg
+redis
+qdrant-client

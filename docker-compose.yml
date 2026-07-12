@@ -1,0 +1,112 @@
+# CodeSage local infrastructure.
+# Frozen data layer per CLAUDE.md §9: PostgreSQL (metadata + Knowledge Graph),
+# Qdrant (vectors), Redis (cache/session state only). No other databases.
+#
+# Usage:
+#   cp .env.example .env   # first time only
+#   docker compose up --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: codesage-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codesage}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codesage}
+      POSTGRES_DB: ${POSTGRES_DB:-codesage}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codesage} -d ${POSTGRES_DB:-codesage}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - codesage-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: codesage-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - codesage-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: codesage-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # The qdrant image ships without curl/wget; a bash /dev/tcp probe
+      # against its own HTTP port is the standard workaround.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - codesage-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: codesage-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Docker-network hostnames — override the localhost defaults used
+      # when the backend runs outside Docker.
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      QDRANT_HOST: qdrant
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      # Liveness only — cheap process-alive check, no downstream I/O on
+      # every poll. Startup already fails fast (see app/core/lifespan.py)
+      # if Postgres/Redis/Qdrant aren't reachable, so by the time this
+      # container is "Up" its dependencies are already known-good.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - codesage-network
+
+networks:
+  codesage-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
