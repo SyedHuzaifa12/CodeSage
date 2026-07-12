@@ -42,7 +42,7 @@ This is deliberate: schema changes should be a controlled, explicit step (CLAUDE
 
 | Service | Container | Host port (default) | Data persistence |
 |---|---|---|---|
-| Backend | `codesage-backend` | `8000` | — (stateless) |
+| Backend | `codesage-backend` | `8000` | `repository_storage` volume (cloned repos, at `/app/data/repositories`) |
 | PostgreSQL | `codesage-postgres` | `5432` | `postgres_data` volume |
 | Redis | `codesage-redis` | `6379` | `redis_data` volume (AOF enabled) |
 | Qdrant | `codesage-qdrant` | `6333` (HTTP), `6334` (gRPC) | `qdrant_data` volume |
@@ -214,4 +214,4 @@ module_name/
 
 ## What's Not Here Yet
 
-By design, this sprint does not include: business API endpoints, repository/service-layer code, authentication/authorization, or AI/LLM code. These are added module-by-module in later sprints, each validated through the Streamlit DevTools console before being wired into the production frontend.
+As of Sprint 1A, `repository/` (clone/CRUD/status lifecycle) is implemented. Still not present: file parsing or Tree-sitter (`ingestion/`), chunking/embeddings/Knowledge Graph (`knowledge/`), retrieval, the AI pipeline, reports, and authentication/authorization. These are added module-by-module in later sprints, each validated through the Streamlit DevTools console before being wired into the production frontend.

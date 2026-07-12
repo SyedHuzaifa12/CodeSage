@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from app.models.relationship import Relationship
     from app.models.report import Report
 
-VALID_REPOSITORY_STATUSES = ("pending", "cloning", "parsing", "indexing", "completed", "failed")
+VALID_REPOSITORY_STATUSES = ("pending", "cloning", "ready", "failed", "deleted")
 
 _status_check_sql = "status IN (" + ", ".join(f"'{value}'" for value in VALID_REPOSITORY_STATUSES) + ")"
 

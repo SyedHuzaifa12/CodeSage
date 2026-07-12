@@ -56,13 +56,23 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 async def get_db() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency yielding a request-scoped database session.
 
+    Commits once the route handler completes without error, or rolls
+    back if it raised — callers never need to manage the transaction
+    themselves, avoiding scattered ``commit()``/``rollback()`` calls
+    across every service.
+
     Yields:
         An :class:`~sqlalchemy.ext.asyncio.AsyncSession` closed automatically
         at the end of the request.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def check_postgres_connection() -> bool:

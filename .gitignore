@@ -28,6 +28,9 @@ instance/
 *.sqlite3
 *.db
 
+# ===== Locally cloned repositories (Repository module storage) =====
+backend/data/
+
 # ===== Next.js / Node =====
 node_modules/
 .next/

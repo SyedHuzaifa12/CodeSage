@@ -17,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 logger = logging.getLogger("codesage.exceptions")
 
 
-def _error_response(status_code: int, message: str, errors: list[dict[str, Any]]) -> JSONResponse:
+def build_error_response(status_code: int, message: str, errors: list[dict[str, Any]]) -> JSONResponse:
     """Build a response following the standard error envelope.
 
     Args:
@@ -49,7 +49,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         {"field": ".".join(str(loc) for loc in err["loc"]), "message": err["msg"], "type": err["type"]}
         for err in exc.errors()
     ]
-    return _error_response(status.HTTP_422_UNPROCESSABLE_ENTITY, "Request validation failed.", errors)
+    return build_error_response(status.HTTP_422_UNPROCESSABLE_ENTITY, "Request validation failed.", errors)
 
 
 async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -63,7 +63,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         A response using the exception's own status code and detail.
     """
     logger.warning("HTTP exception on %s %s: %s", request.method, request.url.path, exc.detail)
-    return _error_response(exc.status_code, str(exc.detail), [{"detail": str(exc.detail)}])
+    return build_error_response(exc.status_code, str(exc.detail), [{"detail": str(exc.detail)}])
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -77,7 +77,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         A generic 500 response; the real exception is logged, never exposed.
     """
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
-    return _error_response(
+    return build_error_response(
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         "An unexpected error occurred.",
         [{"detail": "Internal server error."}],

@@ -82,6 +82,11 @@ services:
       QDRANT_HOST: qdrant
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Cloned repositories must survive container restarts — without
+      # this, a "ready" repository row would point at a path that
+      # vanished the moment the container was recreated.
+      - repository_storage:/app/data/repositories
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,3 +115,4 @@ volumes:
   postgres_data:
   redis_data:
   qdrant_data:
+  repository_storage:

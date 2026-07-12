@@ -7,3 +7,4 @@ asyncpg
 alembic
 redis
 qdrant-client
+GitPython

@@ -42,6 +42,7 @@ class AppSettings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000"
     allowed_hosts: str = "*"
+    repository_storage_path: str = "data/repositories"
 
     @property
     def cors_origins_list(self) -> list[str]:
