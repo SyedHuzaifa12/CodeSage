@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.postgres import get_db
+from app.ingestion.service import WorkspaceService, get_workspace_service
 from app.repository.schemas import (
     RepositoryCreateRequest,
     RepositoryListData,
@@ -23,17 +24,20 @@ router = APIRouter(prefix="/repositories", tags=["repositories"])
 def get_repository_service(
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    workspace_service: WorkspaceService = Depends(get_workspace_service),
 ) -> RepositoryService:
     """Build a request-scoped :class:`RepositoryService`.
 
     Args:
         session: Injected database session.
         settings: Injected application settings.
+        workspace_service: Injected workspace service, used to trigger
+            the initial scan right after a successful clone.
 
     Returns:
         A service instance bound to this request's session.
     """
-    return RepositoryService(session=session, settings=settings)
+    return RepositoryService(session=session, settings=settings, workspace_service=workspace_service)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[RepositoryResponse])

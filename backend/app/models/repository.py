@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from app.models.file import File
     from app.models.relationship import Relationship
     from app.models.report import Report
+    from app.models.repository_workspace import RepositoryWorkspace
 
 VALID_REPOSITORY_STATUSES = ("pending", "cloning", "ready", "failed", "deleted")
 
@@ -55,4 +56,7 @@ class Repository(Base, TimestampMixin):
     reports: Mapped[list["Report"]] = relationship(back_populates="repository", cascade="all, delete-orphan")
     conversations: Mapped[list["Conversation"]] = relationship(
         back_populates="repository", cascade="all, delete-orphan"
+    )
+    workspace: Mapped[Optional["RepositoryWorkspace"]] = relationship(
+        back_populates="repository", cascade="all, delete-orphan", uselist=False
     )

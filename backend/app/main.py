@@ -8,10 +8,13 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.logs import router as logs_router
 from app.core.config import get_settings
 from app.core.lifespan import lifespan
 from app.core.logging import configure_logging
 from app.exceptions.handlers import register_exception_handlers
+from app.ingestion.api import router as ingestion_router
+from app.ingestion.exceptions import register_ingestion_exception_handlers
 from app.middleware import register_middleware
 from app.repository.api import router as repository_router
 from app.repository.exceptions import register_repository_exception_handlers
@@ -29,6 +32,9 @@ app = FastAPI(
 register_middleware(app, settings)
 register_exception_handlers(app)
 register_repository_exception_handlers(app)
+register_ingestion_exception_handlers(app)
 
 app.include_router(health_router)
 app.include_router(repository_router, prefix=settings.app.api_v1_prefix)
+app.include_router(ingestion_router, prefix=settings.app.api_v1_prefix)
+app.include_router(logs_router, prefix=settings.app.api_v1_prefix)

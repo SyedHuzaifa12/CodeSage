@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.ingestion.service import WorkspaceService
 from app.models.repository import Repository
 from app.repository import repository as repository_db
 from app.repository.exceptions import RepositoryAlreadyExistsError, RepositoryNotFoundError
@@ -27,15 +28,19 @@ logger = logging.getLogger("codesage.repository.service")
 class RepositoryService:
     """Orchestrates the repository import/clone/update/delete lifecycle."""
 
-    def __init__(self, session: AsyncSession, settings: Settings) -> None:
+    def __init__(self, session: AsyncSession, settings: Settings, workspace_service: WorkspaceService) -> None:
         """Initialize the service.
 
         Args:
             session: The request-scoped database session.
             settings: Application settings (used for the storage root path).
+            workspace_service: Used to trigger the initial workspace scan
+                immediately after a successful clone (CLAUDE.md §3's
+                documented Repository → Files data flow).
         """
         self._session = session
         self._settings = settings
+        self._workspace_service = workspace_service
 
     async def create_repository(self, payload: RepositoryCreateRequest) -> Repository:
         """Register a new repository and clone it locally.
@@ -85,6 +90,15 @@ class RepositoryService:
         repository.error_message = None
         await repository_db.save(self._session, repository)
         logger.info("Repository %s transitioned to READY", repository.id)
+
+        try:
+            await self._workspace_service.scan_repository(repository.id)
+        except Exception as exc:
+            # A failed initial scan must not fail the clone itself — the
+            # repository is genuinely ready; the workspace independently
+            # records its own failed state, discoverable via its own endpoints.
+            logger.error("Initial workspace scan failed for repository %s: %s", repository.id, exc)
+
         return repository
 
     async def get_repository(self, repository_id: uuid.UUID) -> Repository:
