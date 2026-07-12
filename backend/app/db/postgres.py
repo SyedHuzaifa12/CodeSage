@@ -1,10 +1,12 @@
 """PostgreSQL connection infrastructure.
 
-Connection setup only — no ORM models and no schema management here
-(those arrive with the models/ and Alembic migrations work in a later
-sprint). Provides a lazily-created, process-wide engine, a FastAPI
-dependency for request-scoped sessions, and connectivity/shutdown
-helpers used by the application lifespan and health endpoints.
+Connection and schema-verification only — no CRUD, no business queries.
+Tables are created exclusively through Alembic migrations (CLAUDE.md §9:
+"never hand-edit tables"), so this module checks that the expected
+schema exists rather than ever creating it itself. Provides a
+lazily-created, process-wide engine, a FastAPI dependency for
+request-scoped sessions, and connectivity/shutdown helpers used by the
+application lifespan and health endpoints.
 """
 from __future__ import annotations
 
@@ -12,8 +14,8 @@ import logging
 from collections.abc import AsyncIterator
 from functools import lru_cache
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import inspect, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 
@@ -77,6 +79,41 @@ async def check_postgres_connection() -> bool:
     except Exception:
         logger.exception("PostgreSQL health check failed")
         return False
+
+
+def _get_table_names(sync_connection) -> set[str]:
+    """Synchronous helper run via ``AsyncConnection.run_sync`` to inspect tables."""
+    return set(inspect(sync_connection).get_table_names())
+
+
+async def verify_schema_initialized() -> bool:
+    """Check that every model-defined table exists in the connected database.
+
+    Compares :data:`app.models.Base.metadata`'s registered tables against
+    what actually exists in PostgreSQL. Never creates or alters
+    anything — schema changes only ever happen through Alembic.
+
+    Returns:
+        ``True`` if every expected table exists, ``False`` otherwise
+        (including on any connectivity error).
+    """
+    from app.models import Base
+
+    expected_tables = set(Base.metadata.tables.keys())
+    try:
+        engine = get_engine()
+        async with engine.connect() as connection:
+            connection: AsyncConnection
+            existing_tables = await connection.run_sync(_get_table_names)
+    except Exception:
+        logger.exception("Database schema verification failed")
+        return False
+
+    missing_tables = expected_tables - existing_tables
+    if missing_tables:
+        logger.error("Missing database tables: %s", sorted(missing_tables))
+        return False
+    return True
 
 
 async def close_postgres_connection() -> None:

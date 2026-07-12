@@ -16,6 +16,10 @@ class DatabaseConnectionError(CodeSageError):
     """Raised when PostgreSQL cannot be reached."""
 
 
+class SchemaNotInitializedError(CodeSageError):
+    """Raised when the connected PostgreSQL database is missing expected tables."""
+
+
 class CacheConnectionError(CodeSageError):
     """Raised when Redis cannot be reached."""
 

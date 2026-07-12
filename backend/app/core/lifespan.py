@@ -12,10 +12,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.db.postgres import check_postgres_connection, close_postgres_connection
+from app.db.postgres import check_postgres_connection, close_postgres_connection, verify_schema_initialized
 from app.db.qdrant import check_qdrant_connection, close_qdrant_connection
 from app.db.redis import check_redis_connection, close_redis_connection
-from app.exceptions.base import CacheConnectionError, DatabaseConnectionError, VectorStoreConnectionError
+from app.exceptions.base import (
+    CacheConnectionError,
+    DatabaseConnectionError,
+    SchemaNotInitializedError,
+    VectorStoreConnectionError,
+)
 
 logger = logging.getLogger("codesage.lifespan")
 
@@ -33,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Raises:
         DatabaseConnectionError: If PostgreSQL is unreachable at startup.
+        SchemaNotInitializedError: If PostgreSQL is reachable but missing
+            expected tables (Alembic migrations have not been applied).
         CacheConnectionError: If Redis is unreachable at startup.
         VectorStoreConnectionError: If Qdrant is unreachable at startup.
     """
@@ -41,6 +48,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not await check_postgres_connection():
         raise DatabaseConnectionError("Unable to establish a PostgreSQL connection at startup.")
     logger.info("PostgreSQL connection verified")
+
+    if not await verify_schema_initialized():
+        raise SchemaNotInitializedError(
+            "Database schema is not initialized. Run `alembic upgrade head` before starting the application."
+        )
+    logger.info("Database schema verified")
 
     if not await check_redis_connection():
         raise CacheConnectionError("Unable to establish a Redis connection at startup.")

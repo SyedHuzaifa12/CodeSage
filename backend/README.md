@@ -1,6 +1,6 @@
 # CodeSage Backend
 
-FastAPI backend for CodeSage, built as a **Modular Monolith** per the architecture frozen in the root [`CLAUDE.md`](../CLAUDE.md). Through Sprint 0A this is production-grade **infrastructure only** — configuration, logging, DB/cache/vector-store connections, lifespan, middleware, centralized exception handling, and health checks. No business logic, business endpoints, database models/tables, or AI code exist yet; those land in later sprints per the build order in `CLAUDE.md` §21.
+FastAPI backend for CodeSage, built as a **Modular Monolith** per the architecture frozen in the root [`CLAUDE.md`](../CLAUDE.md). Through Sprint 0B this is production-grade **infrastructure only** — configuration, logging, DB/cache/vector-store connections, lifespan, middleware, centralized exception handling, health checks, and now the persistence layer (SQLAlchemy models + Alembic migrations). No business logic, business endpoints, or AI code exist yet; those land in later sprints per the build order in `CLAUDE.md` §21.
 
 ## Running Locally (no Docker)
 
@@ -10,10 +10,11 @@ cp .env.example .env   # first time only — defaults point at localhost
 uvicorn app.main:app --reload
 ```
 
-PostgreSQL, Redis, and Qdrant must be reachable at startup — the app fails fast if any of them can't be reached (see [Application Lifespan](#application-lifespan)). The simplest way to satisfy that locally is to run the data layer via Docker while iterating on the backend directly on the host:
+PostgreSQL, Redis, and Qdrant must be reachable **and PostgreSQL must have its schema migrated** at startup — the app fails fast otherwise (see [Application Lifespan](#application-lifespan)). The simplest way to satisfy that locally is to run the data layer via Docker while iterating on the backend directly on the host:
 
 ```bash
 docker compose up postgres redis qdrant -d   # from the project root
+alembic upgrade head                          # from backend/ — creates the tables
 ```
 
 Swagger UI at `/docs` now shows the three health endpoints; no business routes exist yet.
@@ -29,6 +30,15 @@ docker compose up --build
 ```
 
 This builds the backend image from `backend/Dockerfile` and starts all four services on a shared `codesage-network` bridge network, so the backend reaches the data layer by service name (`postgres`, `redis`, `qdrant`) rather than `localhost`. Each service has a healthcheck, and the backend only starts once Postgres, Redis, and Qdrant report healthy (`depends_on: condition: service_healthy`).
+
+**Migrations are not run automatically** — the backend will fail to start against a fresh Postgres volume until you apply them once:
+
+```bash
+cd backend
+alembic upgrade head   # against the Docker-published localhost:5432, via backend/.env
+```
+
+This is deliberate: schema changes should be a controlled, explicit step (CLAUDE.md §9 — "never hand-edit tables", and the same discipline extends to never *silently* auto-migrating on container boot either).
 
 | Service | Container | Host port (default) | Data persistence |
 |---|---|---|---|
@@ -58,7 +68,51 @@ Wipe all persisted data (Postgres/Redis/Qdrant volumes) as well:
 docker compose down -v
 ```
 
-All ports, credentials, and app metadata are driven by the root `.env` file (see `.env.example`) — nothing is hardcoded in `docker-compose.yml` or the Dockerfile. Database *tables* and *migrations* are still not part of this sprint (see [What's Not Here Yet](#whats-not-here-yet)) — the backend connects to Postgres/Redis/Qdrant, but nothing is persisted yet.
+All ports, credentials, and app metadata are driven by the root `.env` file (see `.env.example`) — nothing is hardcoded in `docker-compose.yml` or the Dockerfile.
+
+## Database Models & Migrations
+
+Six SQLAlchemy 2.0 models (`app/models/`), matching CLAUDE.md §9 exactly — **models represent data only**: no business methods, no CRUD, no service logic.
+
+| Model | Table | Notes |
+|---|---|---|
+| `Repository` | `repositories` | Owns its own indexing lifecycle: `status` (`pending`/`cloning`/`parsing`/`indexing`/`completed`/`failed`, DB-enforced via `CHECK`), `indexing_progress`, `error_message` — per CLAUDE.md §6, indexing runs as a `BackgroundTask` with progress tracked here, not in a job queue. |
+| `File` | `files` | Belongs to a `Repository`. Unique on `(repository_id, path)`. |
+| `Symbol` | `symbols` | Belongs to a `File`. Indexed on `name` and `symbol_type` for metadata search (§8). |
+| `Relationship` | `relationships` | An edge in the Knowledge Graph. `source_symbol`/`target_symbol` are **indexed strings, not foreign keys** — the KG spans symbol-, file-, and API/DB-level entities (§8's four logical layers), so a strict FK to `symbols` would make three of the four layers unrepresentable. Scoped by a required `repository_id` FK instead, with composite indexes on `(repository_id, relationship_type)`, `(repository_id, source_symbol)`, and `(repository_id, target_symbol)` for graph expansion. |
+| `Report` | `reports` | Belongs to a `Repository`. `report_type` constrained to `summary`/`onboarding`/`architecture`/`impact`. |
+| `Conversation` | `conversations` | Belongs to a `Repository`. Persistent chat history only — transient/session state is Redis's job (§7), not this table's. |
+
+Every model gets `id` (UUID, Python-generated), `created_at`/`updated_at` (DB-generated via `TimestampMixin` in `app/models/base.py`), and cascades: deleting a `Repository` row cascades to every child table (`ON DELETE CASCADE`), matching `DELETE /repositories/{id}`'s documented behavior of removing the entire local index (§9). No soft delete — CLAUDE.md doesn't define one, and the delete semantics it does define ("removes... metadata, vectors, cached data") describe a real delete, not a flag.
+
+### Migration commands
+
+```bash
+cd backend
+
+# create a new migration after changing a model
+alembic revision --autogenerate -m "describe the change"
+
+# apply all pending migrations
+alembic upgrade head
+
+# roll back one migration
+alembic downgrade -1
+
+# check current DB revision / migration history
+alembic current
+alembic history
+```
+
+### Migration workflow
+
+1. Add/change a model in `app/models/`.
+2. If it's a new model, import it in `app/models/__init__.py` (Alembic's autogenerate and the startup schema check both rely on every model being imported so it registers with `Base.metadata`).
+3. `alembic revision --autogenerate -m "..."` — review the generated file in `app/db/migrations/versions/` before applying; autogenerate is a diff tool, not a guarantee.
+4. `alembic upgrade head` against your target database.
+5. Restart the backend — the lifespan schema check re-verifies every expected table exists.
+
+Migrations are **never** run automatically by the application or the Docker image — see the note in [Running with Docker](#running-with-docker).
 
 ## Configuration
 
@@ -90,7 +144,7 @@ No `print()` statements anywhere — use `logging.getLogger(__name__)` (or the `
 
 `app/core/lifespan.py` runs on every app start/stop:
 
-- **Startup**: verifies PostgreSQL, Redis, and Qdrant are all reachable (`SELECT 1`, `PING`, `get_collections()` respectively). If any check fails, the app raises immediately and refuses to start — a broken dependency should be loud, not silent.
+- **Startup**: verifies PostgreSQL is reachable (`SELECT 1`), **then verifies every model-defined table actually exists** (schema introspection against `Base.metadata`, no `CREATE TABLE` — that only ever happens through Alembic), then verifies Redis and Qdrant are reachable (`PING`, `get_collections()`). If any check fails, the app raises immediately and refuses to start — a broken or unmigrated dependency should be loud, not silent.
 - **Shutdown**: disposes the SQLAlchemy engine's pool and closes the Redis/Qdrant clients cleanly.
 
 ## Health Endpoints
@@ -115,8 +169,8 @@ All three return the standard envelope (`success` / `message` / `data`) and a `5
 app/
 ├── main.py            # FastAPI entry point
 ├── core/               # config, logging, security, constants, lifespan — shared app infra
-├── db/                 # Postgres / Qdrant / Redis client setup + Alembic migrations
-├── models/              # SQLAlchemy models (populated when each module's schema lands)
+├── db/                 # Postgres / Qdrant / Redis client setup + migrations/ (Alembic env + versions/)
+├── models/              # SQLAlchemy models: Repository, File, Symbol, Relationship, Report, Conversation
 ├── schemas/             # shared, module-agnostic Pydantic DTOs
 ├── api/v1/              # versioned route registration (routes only, no business logic)
 │
@@ -160,4 +214,4 @@ module_name/
 
 ## What's Not Here Yet
 
-By design, this sprint does not include: business API endpoints, database models/tables, Alembic migrations, authentication/authorization, or AI/LLM code. These are added module-by-module in later sprints, each validated through the Streamlit DevTools console before being wired into the production frontend.
+By design, this sprint does not include: business API endpoints, repository/service-layer code, authentication/authorization, or AI/LLM code. These are added module-by-module in later sprints, each validated through the Streamlit DevTools console before being wired into the production frontend.
