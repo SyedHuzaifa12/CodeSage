@@ -31,10 +31,15 @@ class WorkspaceScanError(IngestionError):
     """Raised when a workspace scan fails (e.g. the local clone directory is missing)."""
 
 
+class IntelligenceNotFoundError(IngestionError):
+    """Raised when a repository exists but has never been analyzed (Sprint 2B)."""
+
+
 _STATUS_BY_EXCEPTION: dict[type[IngestionError], int] = {
     RepositoryNotReadyError: status.HTTP_409_CONFLICT,
     WorkspaceNotFoundError: status.HTTP_404_NOT_FOUND,
     WorkspaceScanError: status.HTTP_500_INTERNAL_SERVER_ERROR,
+    IntelligenceNotFoundError: status.HTTP_404_NOT_FOUND,
 }
 
 

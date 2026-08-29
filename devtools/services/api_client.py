@@ -121,6 +121,24 @@ class ApiClient:
         """Trigger the (placeholder) indexing endpoint."""
         return self._request("POST", f"/api/v1/repositories/{repository_id}/index")
 
+    # ---- Repository Intelligence ----
+
+    def get_intelligence(self, repository_id: str) -> ApiResult:
+        """Fetch a repository's statistics, dependency analysis, and summary."""
+        return self._request("GET", f"/api/v1/repositories/{repository_id}/intelligence")
+
+    def get_call_graph(self, repository_id: str) -> ApiResult:
+        """Fetch a repository's resolved call graph."""
+        return self._request("GET", f"/api/v1/repositories/{repository_id}/call-graph")
+
+    def get_dependency_graph(self, repository_id: str) -> ApiResult:
+        """Fetch a repository's resolved import/dependency graph."""
+        return self._request("GET", f"/api/v1/repositories/{repository_id}/dependency-graph")
+
+    def get_symbols(self, repository_id: str) -> ApiResult:
+        """Fetch every parsed symbol for a repository."""
+        return self._request("GET", f"/api/v1/repositories/{repository_id}/symbols")
+
     # ---- Logs ----
 
     def get_logs(self, limit: int = 200) -> ApiResult:

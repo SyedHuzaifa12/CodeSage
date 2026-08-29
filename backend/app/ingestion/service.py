@@ -1,15 +1,15 @@
 """Workspace lifecycle service — file walk and metadata, never parsing.
 
-Owns the workspace scan/refresh/reset lifecycle and the placeholder
-indexing-trigger endpoint. Never reads file contents, never invokes
-Tree-sitter, never generates embeddings — that begins in Sprint 2
-(CLAUDE.md §6: "Ingestion module: file walk, Tree-sitter parsing,
-symbol/import extraction"; this sprint implements file walk only).
+Owns the workspace scan/refresh/reset lifecycle and validates/triggers
+indexing requests. Actual Tree-sitter parsing lives in
+``parsing_service.py`` (Sprint 2A) — this service never reads file
+contents or invokes Tree-sitter itself; it only flips
+``Repository.indexing_status`` and hands off to the background task.
 
 Depends one-directionally on the Repository module's data-access layer
-and exceptions to read repository facts — matching CLAUDE.md §3's
-documented data flow (Repository → Files). It never writes to
-repository-owned fields.
+and exceptions to read (and, for indexing status only, update)
+repository facts — matching CLAUDE.md §3's documented data flow
+(Repository → Files).
 """
 from __future__ import annotations
 
@@ -191,10 +191,12 @@ class WorkspaceService:
         return await self.scan_repository(repository_id)
 
     async def reset(self, repository_id: uuid.UUID) -> RepositoryWorkspace:
-        """Clear a repository's workspace processing state without touching the clone.
+        """Clear all repository processing state without touching the clone.
 
-        Removes all scanned file metadata and resets workspace statistics
-        back to ``pending``. The cloned repository on disk is untouched.
+        Removes scanned file metadata (which cascades to delete their
+        symbols) and every parsed relationship, and resets both workspace
+        (scan) and repository (index) state back to their initial values.
+        The cloned repository on disk is untouched.
 
         Args:
             repository_id: The repository's UUID.
@@ -207,6 +209,7 @@ class WorkspaceService:
         """
         workspace = await self.get_workspace(repository_id)
         await ingestion_db.replace_files(self._session, repository_id, [])
+        await ingestion_db.replace_relationships(self._session, repository_id, [])
 
         workspace.status = "pending"
         workspace.progress = 0
@@ -218,20 +221,30 @@ class WorkspaceService:
         workspace.repository_size_bytes = 0
         workspace.language_distribution = {}
         await ingestion_db.save_workspace(self._session, workspace)
+
+        repository = await self._get_repository(repository_id)
+        repository.indexing_status = "not_started"
+        repository.indexing_progress = 0
+        repository.error_message = None
+        await repository_db.save(self._session, repository)
+
         logger.info("Workspace %s reset to PENDING for repository %s", workspace.id, repository_id)
         return workspace
 
     async def request_indexing(self, repository_id: uuid.UUID) -> RepositoryWorkspace:
-        """Validate a repository is ready and acknowledge an indexing request.
+        """Validate a repository is ready and flip it into the ``indexing`` state.
 
-        Placeholder for Sprint 2 — performs no actual indexing, parsing,
-        embedding, or AI work.
+        Only validates and marks the repository as indexing — the
+        actual Tree-sitter parsing runs afterward, in the background
+        (CLAUDE.md §6: "Repository indexing runs as a FastAPI
+        BackgroundTask"), via a fresh session it creates itself.
 
         Args:
             repository_id: The repository's UUID.
 
         Returns:
-            The current workspace row, unchanged.
+            The current workspace row (unchanged; indexing status lives
+            on the repository, not the workspace).
 
         Raises:
             RepositoryNotFoundError: If no repository has that id.
@@ -244,7 +257,21 @@ class WorkspaceService:
                 f"Repository '{repository_id}' is not ready for indexing (status={repository.status})."
             )
         workspace = await self.get_workspace(repository_id)
-        logger.info("Indexing requested for repository %s (placeholder — implemented in Sprint 2)", repository_id)
+
+        repository.indexing_status = "indexing"
+        repository.indexing_progress = 0
+        repository.error_message = None
+        await repository_db.save(self._session, repository)
+        # Committed explicitly, here, rather than left to get_db()'s
+        # end-of-request commit: the background task started right after
+        # this uses its OWN session and immediately writes to this same
+        # row. If this request's transaction were still open (uncommitted)
+        # when that write lands, the two sessions deadlock — this request
+        # holds the row lock waiting for the background task to finish,
+        # while the background task blocks waiting for the lock to clear.
+        await self._session.commit()
+        logger.info("Repository %s transitioning to INDEXING", repository_id)
+
         return workspace
 
 

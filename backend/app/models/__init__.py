@@ -10,6 +10,7 @@ from app.models.file import File
 from app.models.relationship import Relationship
 from app.models.report import Report
 from app.models.repository import Repository
+from app.models.repository_intelligence import RepositoryIntelligence
 from app.models.repository_workspace import RepositoryWorkspace
 from app.models.symbol import Symbol
 
@@ -17,6 +18,7 @@ __all__ = [
     "Base",
     "Repository",
     "RepositoryWorkspace",
+    "RepositoryIntelligence",
     "File",
     "Symbol",
     "Relationship",

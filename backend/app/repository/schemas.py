@@ -50,6 +50,7 @@ class RepositoryResponse(BaseModel):
     local_path: str
     language: Optional[str]
     status: str
+    indexing_status: str
     indexing_progress: int
     error_message: Optional[str]
     created_at: datetime

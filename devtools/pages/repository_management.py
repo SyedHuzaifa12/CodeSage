@@ -51,11 +51,15 @@ for repo in repositories:
             st.markdown(f"**{repo['name']}**")
             st.caption(repo["github_url"] or "(local)")
             st.caption(f"Status: `{repo['status']}` · id `{repo['id']}`")
+            st.caption(
+                f"Indexing: `{repo.get('indexing_status', 'not_started')}` "
+                f"({repo.get('indexing_progress', 0)}%)"
+            )
             if repo.get("error_message"):
                 st.caption(f"⚠️ {repo['error_message']}")
 
         with action_col:
-            button_cols = st.columns(3)
+            button_cols = st.columns(4)
 
             if button_cols[0].button("Refresh", key=f"refresh_{repo['id']}"):
                 with loading("Refreshing workspace..."):
@@ -67,7 +71,12 @@ for repo in repositories:
                     reset_result = client.reset_workspace(repo["id"])
                 show_result(reset_result)
 
-            if button_cols[2].button("Delete", key=f"delete_btn_{repo['id']}"):
+            if button_cols[2].button("Index", key=f"index_{repo['id']}"):
+                with loading("Starting indexing..."):
+                    index_result = client.trigger_index(repo["id"])
+                show_result(index_result, success_message="Indexing started in the background.")
+
+            if button_cols[3].button("Delete", key=f"delete_btn_{repo['id']}"):
                 st.session_state[f"confirm_delete_{repo['id']}"] = True
 
         if st.session_state.get(f"confirm_delete_{repo['id']}"):

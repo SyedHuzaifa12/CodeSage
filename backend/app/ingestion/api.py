@@ -9,14 +9,40 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.schemas import IndexTriggerResponse, RepositoryTreeData, WorkspaceResponse
+from app.db.postgres import get_db
+from app.ingestion.intelligence_service import RepositoryIntelligenceService
+from app.ingestion.parsing_service import run_parsing_pipeline
+from app.ingestion.schemas import (
+    CallGraphData,
+    DependencyGraphData,
+    GraphEdge,
+    IndexTriggerResponse,
+    IntelligenceResponse,
+    RepositoryTreeData,
+    SymbolExplorerData,
+    SymbolExplorerItem,
+    WorkspaceResponse,
+)
 from app.ingestion.service import WorkspaceService, get_workspace_service
 from app.ingestion.utils import build_tree
 from app.schemas.envelope import SuccessResponse
 
 router = APIRouter(prefix="/repositories/{repository_id}", tags=["workspace"])
+
+
+def get_intelligence_service(session: AsyncSession = Depends(get_db)) -> RepositoryIntelligenceService:
+    """Build a request-scoped RepositoryIntelligenceService for dependency injection.
+
+    Args:
+        session: Injected database session.
+
+    Returns:
+        A service instance bound to this request's session.
+    """
+    return RepositoryIntelligenceService(session=session)
 
 
 @router.get("/workspace", response_model=SuccessResponse[WorkspaceResponse])
@@ -99,24 +125,129 @@ async def reset_workspace(
 )
 async def trigger_indexing(
     repository_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     service: WorkspaceService = Depends(get_workspace_service),
 ) -> SuccessResponse[IndexTriggerResponse]:
-    """Validate a repository and acknowledge an indexing request.
+    """Validate a repository and start Tree-sitter parsing in the background.
 
-    Placeholder for Sprint 2 — performs no indexing, parsing, embedding,
-    or AI work of any kind.
+    Per CLAUDE.md §6, indexing runs as a FastAPI ``BackgroundTask``: this
+    request only validates the repository and flips it to ``indexing``;
+    the actual parse (``parsing_service.run_parsing_pipeline``) runs
+    after the response is sent, using its own fresh database session.
 
     Args:
         repository_id: The repository's UUID.
+        background_tasks: FastAPI's background-task registrar.
         service: Injected workspace service.
 
     Returns:
-        An acknowledgement payload; no indexing has actually occurred.
+        An acknowledgement payload — parsing has started, not finished;
+        poll ``GET /repositories/{id}`` for ``indexing_status``/``indexing_progress``.
     """
     workspace = await service.request_indexing(repository_id)
+    background_tasks.add_task(run_parsing_pipeline, repository_id)
     data = IndexTriggerResponse(
         repository_id=repository_id,
         workspace_status=workspace.status,
-        message="Indexing request accepted. Actual indexing is implemented in Sprint 2.",
+        message="Indexing started in the background. Poll GET /repositories/{id} for progress.",
     )
     return SuccessResponse(message="Indexing request accepted.", data=data)
+
+
+@router.get("/intelligence", response_model=SuccessResponse[IntelligenceResponse])
+async def get_intelligence(
+    repository_id: uuid.UUID,
+    service: RepositoryIntelligenceService = Depends(get_intelligence_service),
+) -> SuccessResponse[IntelligenceResponse]:
+    """Fetch a repository's statistics, dependency analysis, and rule-based summary.
+
+    Args:
+        repository_id: The repository's UUID.
+        service: Injected intelligence service.
+
+    Returns:
+        The repository's intelligence row.
+    """
+    intelligence = await service.get_intelligence(repository_id)
+    return SuccessResponse(message="Repository intelligence retrieved.", data=intelligence)
+
+
+@router.get("/call-graph", response_model=SuccessResponse[CallGraphData])
+async def get_call_graph(
+    repository_id: uuid.UUID,
+    service: RepositoryIntelligenceService = Depends(get_intelligence_service),
+) -> SuccessResponse[CallGraphData]:
+    """Fetch the resolved caller -> callee call graph.
+
+    Args:
+        repository_id: The repository's UUID.
+        service: Injected intelligence service.
+
+    Returns:
+        Every resolved call edge, plus the set of symbols involved.
+    """
+    nodes, edges = await service.get_call_graph(repository_id)
+    data = CallGraphData(
+        repository_id=repository_id, nodes=nodes, edges=[GraphEdge(source=s, target=t) for s, t in edges]
+    )
+    return SuccessResponse(message="Call graph retrieved.", data=data)
+
+
+@router.get("/dependency-graph", response_model=SuccessResponse[DependencyGraphData])
+async def get_dependency_graph(
+    repository_id: uuid.UUID,
+    service: RepositoryIntelligenceService = Depends(get_intelligence_service),
+) -> SuccessResponse[DependencyGraphData]:
+    """Fetch the resolved import/dependency graph, circular dependencies, and orphan files.
+
+    Args:
+        repository_id: The repository's UUID.
+        service: Injected intelligence service.
+
+    Returns:
+        Every resolved internal import edge plus dependency analysis results.
+    """
+    nodes, edges, cycles, orphans = await service.get_dependency_graph(repository_id)
+    data = DependencyGraphData(
+        repository_id=repository_id,
+        nodes=nodes,
+        edges=[GraphEdge(source=s, target=t) for s, t in edges],
+        circular_dependencies=cycles,
+        orphan_files=orphans,
+    )
+    return SuccessResponse(message="Dependency graph retrieved.", data=data)
+
+
+@router.get("/symbols", response_model=SuccessResponse[SymbolExplorerData])
+async def get_symbols(
+    repository_id: uuid.UUID,
+    service: RepositoryIntelligenceService = Depends(get_intelligence_service),
+) -> SuccessResponse[SymbolExplorerData]:
+    """Fetch every parsed symbol for a repository, joined with its file path.
+
+    Args:
+        repository_id: The repository's UUID.
+        service: Injected intelligence service.
+
+    Returns:
+        Every symbol, for the Symbol Explorer DevTools page.
+    """
+    pairs = await service.get_symbols(repository_id)
+    items = [
+        SymbolExplorerItem(
+            id=symbol.id,
+            file_id=symbol.file_id,
+            file_path=file_path,
+            parent_symbol_id=symbol.parent_symbol_id,
+            name=symbol.name,
+            qualified_name=symbol.qualified_name,
+            symbol_type=symbol.symbol_type,
+            visibility=symbol.visibility,
+            start_line=symbol.start_line,
+            end_line=symbol.end_line,
+            signature=symbol.signature,
+        )
+        for symbol, file_path in pairs
+    ]
+    data = SymbolExplorerData(repository_id=repository_id, symbols=items)
+    return SuccessResponse(message="Symbols retrieved.", data=data)
