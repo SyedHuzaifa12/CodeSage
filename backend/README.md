@@ -76,7 +76,7 @@ Six SQLAlchemy 2.0 models (`app/models/`), matching CLAUDE.md §9 exactly — **
 
 | Model | Table | Notes |
 |---|---|---|
-| `Repository` | `repositories` | Owns its own indexing lifecycle: `status` (`pending`/`cloning`/`parsing`/`indexing`/`completed`/`failed`, DB-enforced via `CHECK`), `indexing_progress`, `error_message` — per CLAUDE.md §6, indexing runs as a `BackgroundTask` with progress tracked here, not in a job queue. |
+| `Repository` | `repositories` | Owns its own indexing lifecycle: `status` (`pending`/`cloning`/`parsing`/`indexing`/`completed`/`failed`, DB-enforced via `CHECK`), `indexing_progress`, `error_message` — per CLAUDE.md §6, indexing runs as  a `BackgroundTask` with progress tracked here, not in a job queue. |
 | `File` | `files` | Belongs to a `Repository`. Unique on `(repository_id, path)`. |
 | `Symbol` | `symbols` | Belongs to a `File`. Indexed on `name` and `symbol_type` for metadata search (§8). |
 | `Relationship` | `relationships` | An edge in the Knowledge Graph. `source_symbol`/`target_symbol` are **indexed strings, not foreign keys** — the KG spans symbol-, file-, and API/DB-level entities (§8's four logical layers), so a strict FK to `symbols` would make three of the four layers unrepresentable. Scoped by a required `repository_id` FK instead, with composite indexes on `(repository_id, relationship_type)`, `(repository_id, source_symbol)`, and `(repository_id, target_symbol)` for graph expansion. |
