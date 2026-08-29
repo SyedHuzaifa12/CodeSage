@@ -116,7 +116,7 @@ Migrations are **never** run automatically by the application or the Docker imag
 
 ## Configuration
 
-All configuration is loaded via `pydantic-settings` in `app/core/config.py`, split into six independently-validated groups, each reading from environment variables (and, locally, `.env`):
+All configuration is loaded via `pydantic-settings` in `app/core/config.py`,  split into six independently-validated groups, each reading from environment variables (and, locally, `.env`):
 
 | Class | Concern | Key env vars |
 |---|---|---|
