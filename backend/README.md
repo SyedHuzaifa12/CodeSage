@@ -1,6 +1,6 @@
 # CodeSage Backend
 
-FastAPI backend for CodeSage, built as a **Modular Monolith** per the architecture frozen in the root [`CLAUDE.md`](../CLAUDE.md). Through Sprint 0B this is production-grade **infrastructure only** — configuration, logging, DB/cache/vector-store connections, lifespan, middleware, centralized exception handling, health checks, and now the persistence layer (SQLAlchemy models + Alembic migrations). No business logic, business endpoints, or AI code exist yet; those land in later sprints per the build order in `CLAUDE.md` §21.
+FastAPI backend for CodeSage, built as a **Modular Monolith** per the architecture frozen in the root [`CLAUDE.md`](../CLAUDE.md). Through Sprint 0B this is production-grade **infrastructure only** — configuration, logging, DB/cache/vector-store connections, lifespan, middleware, centralized exception handling, health checks, and now the persistence layer (SQLAlchemy models + Alembic migrations). No business logic, business endpoints, or AI code exist yet; those land in later sprints per the build order.
 
 ## Running Locally (no Docker)
 
