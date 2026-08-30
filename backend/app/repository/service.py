@@ -15,7 +15,9 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.db.qdrant import get_qdrant_client
 from app.ingestion.service import WorkspaceService
+from app.knowledge.qdrant_store import delete_points_by_repository
 from app.models.repository import Repository
 from app.repository import repository as repository_db
 from app.repository.exceptions import RepositoryAlreadyExistsError, RepositoryNotFoundError
@@ -149,11 +151,16 @@ class RepositoryService:
         """Remove a repository's local clone and all of its metadata.
 
         Performs a hard delete: the row (and, via cascade, every child
-        row) is removed entirely, matching CLAUDE.md §9 — only the local
-        index is affected, never the original GitHub source. ``DELETED``
-        is set on the in-memory instance immediately beforehand purely so
-        the transition is logged consistently; it is never persisted as a
-        queryable state.
+        row — including knowledge chunk metadata) is removed entirely,
+        matching CLAUDE.md §9 — only the local index is affected, never
+        the original GitHub source. ``DELETED`` is set on the in-memory
+        instance immediately beforehand purely so the transition is
+        logged consistently; it is never persisted as a queryable state.
+
+        Qdrant has no foreign-key cascade, so this repository's vector
+        points are deleted explicitly before the Postgres delete —
+        otherwise they would silently outlive the repository they
+        belong to and could be served as query results after deletion.
 
         Args:
             repository_id: The repository's UUID primary key.
@@ -165,6 +172,7 @@ class RepositoryService:
         repository.status = "deleted"
         logger.info("Repository %s transitioning to DELETED", repository.id)
 
+        await delete_points_by_repository(get_qdrant_client(), repository_id)
         remove_local_clone(Path(repository.local_path))
         await repository_db.delete(self._session, repository)
         logger.info("Repository %s deleted", repository_id)

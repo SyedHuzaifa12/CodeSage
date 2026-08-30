@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Pinned to a stable, widely-supported Python release rather than the newest
-# interpreter, since upcoming sprints add compiled dependencies (Tree-sitter
-# bindings, psycopg2, sentence-transformers) that need mature wheel support.
+# interpreter, since this image carries compiled dependencies (Tree-sitter
+# bindings, onnxruntime via fastembed) that need mature wheel support.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -26,7 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 RUN useradd --create-home --uid 1000 appuser \
-    && mkdir -p /app/data/repositories \
+    && mkdir -p /app/data/repositories /app/data/embedding_cache \
     && chown -R appuser:appuser /app
 USER appuser
 

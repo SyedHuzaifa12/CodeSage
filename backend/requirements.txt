@@ -13,3 +13,8 @@ tree-sitter-python
 tree-sitter-javascript
 tree-sitter-typescript
 tree-sitter-java
+fastembed
+numpy
+pytest
+pytest-asyncio
+httpx

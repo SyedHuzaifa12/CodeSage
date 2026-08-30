@@ -19,6 +19,8 @@ from app.models.base import Base, TimestampMixin
 if TYPE_CHECKING:
     from app.models.conversation import Conversation
     from app.models.file import File
+    from app.models.knowledge_chunk import KnowledgeChunk
+    from app.models.knowledge_index_state import KnowledgeIndexState
     from app.models.relationship import Relationship
     from app.models.report import Report
     from app.models.repository_intelligence import RepositoryIntelligence
@@ -68,5 +70,11 @@ class Repository(Base, TimestampMixin):
         back_populates="repository", cascade="all, delete-orphan", uselist=False
     )
     intelligence: Mapped[Optional["RepositoryIntelligence"]] = relationship(
+        back_populates="repository", cascade="all, delete-orphan", uselist=False
+    )
+    knowledge_chunks: Mapped[list["KnowledgeChunk"]] = relationship(
+        back_populates="repository", cascade="all, delete-orphan"
+    )
+    knowledge_index_state: Mapped[Optional["KnowledgeIndexState"]] = relationship(
         back_populates="repository", cascade="all, delete-orphan", uselist=False
     )

@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.db.postgres import check_postgres_connection, close_postgres_connection, verify_schema_initialized
-from app.db.qdrant import check_qdrant_connection, close_qdrant_connection
+from app.db.qdrant import check_qdrant_connection, close_qdrant_connection, get_qdrant_client
 from app.db.redis import check_redis_connection, close_redis_connection
 from app.exceptions.base import (
     CacheConnectionError,
@@ -21,6 +21,7 @@ from app.exceptions.base import (
     SchemaNotInitializedError,
     VectorStoreConnectionError,
 )
+from app.knowledge.qdrant_store import ensure_collection
 
 logger = logging.getLogger("codesage.lifespan")
 
@@ -62,6 +63,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not await check_qdrant_connection():
         raise VectorStoreConnectionError("Unable to establish a Qdrant connection at startup.")
     logger.info("Qdrant connection verified")
+
+    await ensure_collection(get_qdrant_client())
+    logger.info("Qdrant 'repository_chunks' collection verified")
 
     yield
 

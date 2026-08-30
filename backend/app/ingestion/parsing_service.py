@@ -27,6 +27,7 @@ from app.ingestion import repository as ingestion_db
 from app.ingestion.intelligence_service import RepositoryIntelligenceService
 from app.ingestion.parsers import ParserManager, create_default_parser_manager
 from app.ingestion.parsers.base import module_path_from_relative_path
+from app.knowledge.service import KnowledgeService
 from app.models.file import File
 from app.models.repository import Repository
 from app.repository import repository as repository_db
@@ -167,6 +168,9 @@ async def run_parsing_pipeline(repository_id: uuid.UUID) -> None:
             # background-task note for the failure mode this avoids).
             intelligence_service = RepositoryIntelligenceService(session)
             await intelligence_service.analyze_repository(repository_id)
+
+            knowledge_service = KnowledgeService(session)
+            await knowledge_service.index_repository(repository_id)
 
             await session.commit()
         except Exception:

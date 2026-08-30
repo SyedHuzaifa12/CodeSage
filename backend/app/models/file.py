@@ -12,6 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.knowledge_chunk import KnowledgeChunk
     from app.models.repository import Repository
     from app.models.symbol import Symbol
 
@@ -35,3 +36,4 @@ class File(Base, TimestampMixin):
 
     repository: Mapped["Repository"] = relationship(back_populates="files")
     symbols: Mapped[list["Symbol"]] = relationship(back_populates="file", cascade="all, delete-orphan")
+    knowledge_chunks: Mapped[list["KnowledgeChunk"]] = relationship(back_populates="file", cascade="all, delete-orphan")

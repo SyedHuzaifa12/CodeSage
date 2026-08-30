@@ -21,9 +21,12 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import get_db
+from app.db.qdrant import get_qdrant_client
 from app.ingestion import repository as ingestion_db
 from app.ingestion.exceptions import RepositoryNotReadyError, WorkspaceNotFoundError, WorkspaceScanError
 from app.ingestion.utils import scan_directory
+from app.knowledge import repository as knowledge_db
+from app.knowledge.qdrant_store import delete_points_by_repository
 from app.models.file import File
 from app.models.repository import Repository
 from app.models.repository_workspace import RepositoryWorkspace
@@ -194,9 +197,16 @@ class WorkspaceService:
         """Clear all repository processing state without touching the clone.
 
         Removes scanned file metadata (which cascades to delete their
-        symbols) and every parsed relationship, and resets both workspace
-        (scan) and repository (index) state back to their initial values.
-        The cloned repository on disk is untouched.
+        symbols and knowledge chunks) and every parsed relationship, and
+        resets both workspace (scan) and repository (index) state back
+        to their initial values. The cloned repository on disk is
+        untouched.
+
+        Knowledge chunks are wiped in both stores: Postgres rows cascade
+        automatically via ``files`` -> ``knowledge_chunks`` ``ON DELETE
+        CASCADE``, but Qdrant has no such cascade, so its points are
+        deleted explicitly here — otherwise a reset repository would
+        keep serving stale vectors from before the reset.
 
         Args:
             repository_id: The repository's UUID.
@@ -210,6 +220,7 @@ class WorkspaceService:
         workspace = await self.get_workspace(repository_id)
         await ingestion_db.replace_files(self._session, repository_id, [])
         await ingestion_db.replace_relationships(self._session, repository_id, [])
+        await delete_points_by_repository(get_qdrant_client(), repository_id)
 
         workspace.status = "pending"
         workspace.progress = 0
@@ -227,6 +238,19 @@ class WorkspaceService:
         repository.indexing_progress = 0
         repository.error_message = None
         await repository_db.save(self._session, repository)
+
+        knowledge_state = await knowledge_db.get_index_state(self._session, repository_id)
+        if knowledge_state is not None:
+            knowledge_state.status = "pending"
+            knowledge_state.progress = 0
+            knowledge_state.error_message = None
+            knowledge_state.total_files_considered = 0
+            knowledge_state.total_files_skipped_unchanged = 0
+            knowledge_state.total_files_failed = 0
+            knowledge_state.total_chunks = 0
+            knowledge_state.total_chunks_from_cache = 0
+            knowledge_state.total_chunks_embedded_fresh = 0
+            await knowledge_db.save_index_state(self._session, knowledge_state)
 
         logger.info("Workspace %s reset to PENDING for repository %s", workspace.id, repository_id)
         return workspace

@@ -87,6 +87,10 @@ services:
       # this, a "ready" repository row would point at a path that
       # vanished the moment the container was recreated.
       - repository_storage:/app/data/repositories
+      # The embedding model's ONNX weights (~70MB) must also survive
+      # restarts — without this, every container recreation re-downloads
+      # the model from Hugging Face before the first index run can start.
+      - embedding_cache:/app/data/embedding_cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -116,3 +120,4 @@ volumes:
   redis_data:
   qdrant_data:
   repository_storage:
+  embedding_cache:

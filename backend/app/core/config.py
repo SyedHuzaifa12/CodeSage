@@ -103,10 +103,12 @@ class QdrantSettings(BaseSettings):
 
 
 class LLMSettings(BaseSettings):
-    """LLM provider configuration (Groq primary, Ollama fallback — ADR-014).
+    """LLM and embedding provider configuration.
 
-    Configuration only: no LLM or embedding calls are made in this sprint.
-    These values are consumed once the AI module is implemented.
+    LLM fields (Groq primary, Ollama fallback — ADR-014) are
+    configuration only: no LLM calls are made until the AI module is
+    implemented. The embedding fields are consumed starting Sprint 3
+    (Knowledge module).
     """
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
@@ -116,7 +118,33 @@ class LLMSettings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
+
+    # Embedding provider is intentionally decoupled from the LLM
+    # provider above — swapping to a hosted embedding API later only
+    # means adding another branch in knowledge/embedding.py, never a
+    # settings redesign.
+    embedding_provider: Literal["fastembed"] = "fastembed"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_dimension: int = 384
+    embedding_batch_size: int = 32
+    embedding_cache_ttl_seconds: int = 2_592_000  # 30 days — Redis is a pure perf cache, never the source of truth
+    embedding_model_cache_dir: str = "data/embedding_cache"
+
+    @property
+    def embedding_version(self) -> str:
+        """A single string identifying the active embedding configuration.
+
+        Baked into every persisted chunk row and every Redis cache key.
+        Changing the provider, model, or dimension changes this string,
+        which makes old chunks/cache entries naturally ineligible for
+        reuse — the fast-path skip and cache lookups simply stop
+        matching, forcing a full re-embed rather than silently mixing
+        vectors from two different embedding spaces.
+
+        Returns:
+            ``"{provider}:{model}:{dimension}"``.
+        """
+        return f"{self.embedding_provider}:{self.embedding_model}:{self.embedding_dimension}"
 
 
 class LoggingSettings(BaseSettings):
