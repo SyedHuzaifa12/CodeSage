@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens — Editorial Graph (Sprint 7 Design System §7).
+ * Single, permanent dark visual language. No light-mode variant exists;
+ * this is a deliberate art-direction decision, not an oversight.
+ */
+:root {
+  color-scheme: dark;
+
+  --cs-bg: oklch(0.15 0.006 280);
+  --cs-surface-1: oklch(0.17 0.008 280);
+  --cs-surface-2: oklch(0.19 0.01 280);
+  --cs-border-subtle: oklch(1 0 0 / 0.07);
+  --cs-border-strong: oklch(1 0 0 / 0.14);
+
+  --cs-text-primary: oklch(0.93 0.006 280);
+  --cs-text-secondary: oklch(0.7 0.01 280);
+  --cs-text-tertiary: oklch(0.55 0.01 280);
+
+  --cs-accent-violet: oklch(0.75 0.13 300);
+  --cs-accent-violet-hover: oklch(0.8 0.135 300);
+  --cs-accent-cyan: oklch(0.75 0.12 200);
+  --cs-success: oklch(0.78 0.13 145);
+  --cs-warning: oklch(0.78 0.12 70);
+  --cs-danger: oklch(0.7 0.16 25);
+  --cs-info: oklch(0.75 0.12 230);
+
+  /* Card treatment reserved for transient overlays / genuine call-outs (§16). */
+  --cs-card-bg: oklch(0.17 0.008 280 / 0.6);
+  --cs-card-highlight: inset 0 1px 0 oklch(1 0 0 / 0.05);
+
+  /* Atmospheric topology watermark ceiling — a token, never eyeballed per page (§17 trade-offs). */
+  --cs-watermark-opacity: 0.05;
+
+  --cs-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: var(--cs-bg);
+  color: var(--cs-text-primary);
+  overflow-x: hidden;
+}
+
+body {
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+a {
+  color: var(--cs-accent-violet);
+}
+
+/* Focus-visible: the flat/hairline aesthetic makes a strong outline ring MORE
+   necessary, not less (Design System §12). Never dropped for quietness. */
+:focus-visible {
+  outline: 2px solid var(--cs-accent-violet);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: oklch(0.75 0.13 300 / 0.3);
+}
+
+.cs-card {
+  border-radius: 14px;
+  background: var(--cs-card-bg);
+  border: 1px solid var(--cs-border-subtle);
+  box-shadow: var(--cs-card-highlight);
+}
+
+.cs-skel {
+  background: linear-gradient(
+    90deg,
+    oklch(1 0 0 / 0.04) 0%,
+    oklch(1 0 0 / 0.09) 50%,
+    oklch(1 0 0 / 0.04) 100%
+  );
+  background-size: 200px 100%;
+  animation: cs-shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+.cs-mono-label {
+  font-family: var(--font-plex-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--cs-text-tertiary);
+}
+
+.cs-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.15) transparent;
+}
+.cs-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.cs-scrollbar::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.15);
+  border-radius: 999px;
+}
+
+/* prefers-reduced-motion: every named motion moment collapses to instant —
+   no exceptions, no "reduced but still animated" middle ground (§12). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visually-hidden but screen-reader-accessible text (diagram summaries, sr-only labels). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
