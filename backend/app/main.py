@@ -22,6 +22,8 @@ from app.knowledge.exceptions import register_knowledge_exception_handlers
 from app.middleware import register_middleware
 from app.repository.api import router as repository_router
 from app.repository.exceptions import register_repository_exception_handlers
+from app.reports.api import router as reports_router
+from app.reports.exceptions import register_reports_exception_handlers
 from app.retrieval.api import router as retrieval_router
 from app.retrieval.exceptions import register_retrieval_exception_handlers
 
@@ -42,6 +44,7 @@ register_ingestion_exception_handlers(app)
 register_knowledge_exception_handlers(app)
 register_retrieval_exception_handlers(app)
 register_ai_exception_handlers(app)
+register_reports_exception_handlers(app)
 
 app.include_router(health_router)
 app.include_router(repository_router, prefix=settings.app.api_v1_prefix)
@@ -49,4 +52,5 @@ app.include_router(ingestion_router, prefix=settings.app.api_v1_prefix)
 app.include_router(knowledge_router, prefix=settings.app.api_v1_prefix)
 app.include_router(retrieval_router, prefix=settings.app.api_v1_prefix)
 app.include_router(ai_router, prefix=settings.app.api_v1_prefix)
+app.include_router(reports_router, prefix=settings.app.api_v1_prefix)
 app.include_router(logs_router, prefix=settings.app.api_v1_prefix)

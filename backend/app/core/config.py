@@ -290,6 +290,31 @@ class AISettings(BaseSettings):
     answer_cache_ttl_seconds: int = 1800  # 30 minutes — an LLM answer is more expensive to recompute than a retrieval
 
 
+class ReportSettings(BaseSettings):
+    """Repository Intelligence Reports pipeline behavior (Sprint 6).
+
+    Same split rationale as ``AISettings`` vs. ``LLMSettings``: this
+    class owns "how the report pipeline behaves" (whether AI synthesis
+    runs at all, report cache lifetime) — the LLM call itself, when
+    made, still goes through ``LLMSettings``/``app.ai.llm.provider``
+    unchanged (spec §9: reuse the AI Engine, never a second LLM framework).
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    # A whole-repository kill switch for the optional AI-narrative pass
+    # (spec §9: "do not make every report require an LLM call if
+    # deterministic generation is sufficient" — ``dependency_risk`` and
+    # ``health`` never request AI narrative regardless of this flag;
+    # this only gates the three report types that do).
+    ai_synthesis_enabled: bool = True
+
+    # Report cache (§13) — its own Redis key space/TTL, distinct from
+    # both Retrieval's and the AI Engine's caches.
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 3600  # 1 hour — a full report is more expensive to recompute than a single AI answer
+
+
 class Settings:
     """Aggregates every settings group behind a single access point."""
 
@@ -302,6 +327,7 @@ class Settings:
         self.logging = LoggingSettings()
         self.retrieval = RetrievalSettings()
         self.ai = AISettings()
+        self.reports = ReportSettings()
 
 
 @lru_cache

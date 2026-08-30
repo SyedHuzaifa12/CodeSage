@@ -26,6 +26,14 @@ These ADRs are binding for Version 1. They are the canonical source of truth alo
 | [014](#adr-014--groq-primary-with-ollama-local-fallback-for-llm-inference) | Groq Primary with Ollama Local Fallback for LLM Inference |
 | [015](#adr-015--technology-stack-freeze) | Technology Stack Freeze |
 | [016](#adr-016--version-1-scope-freeze) | Version 1 Scope Freeze |
+| [017](#adr-017--hybrid-retrieval-fusion-sprint-4) | Hybrid Retrieval Fusion (Sprint 4) |
+| [018](#adr-018--cross-encoder-reranking-implemented-disabled-by-default-pre-sprint-5-hardening-pass) | Cross-Encoder Reranking: Implemented, Disabled by Default (Pre-Sprint-5 Hardening Pass) |
+| [019](#adr-019--ai-engine-orchestration-langgraph-boundary-and-module-layout-sprint-5) | AI Engine Orchestration: LangGraph Boundary and Module Layout (Sprint 5) |
+| [020](#adr-020--verification-gate-deterministic-only-no-second-llm-call-sprint-5) | Verification Gate: Deterministic-Only, No Second LLM Call (Sprint 5) |
+| [021](#adr-021--append-only-report-rows-with-a-widened-check-constraint-sprint-6) | Append-Only Report Rows with a Widened CHECK Constraint (Sprint 6) |
+| [022](#adr-022--evidenceconfidence-as-a-distinct-vocabulary-from-verificationstatus-sprint-6) | `EvidenceConfidence` as a Distinct Vocabulary from `VerificationStatus` (Sprint 6) |
+| [023](#adr-023--report-synthesis-reuses-ai-engine-components-not-the-ask-langgraph-sprint-6) | Report Synthesis Reuses AI Engine Components, Not the `/ask` LangGraph (Sprint 6) |
+| [024](#adr-024--deterministic-graph-data-as-the-sole-source-of-truth-for-mermaid-diagrams-sprint-6) | Deterministic Graph Data as the Sole Source of Truth for Mermaid Diagrams (Sprint 6) |
 
 ---
 
@@ -483,3 +491,98 @@ Spec §8 requires a verification gate as "a critical component" but explicitly w
 - (+) `CONTRADICTED`/`INSUFFICIENT_EVIDENCE` results are handled by a bounded retry (broadened retrieval + a stricter re-prompt, capped at 1 retry) and, on final failure, a deterministic downgrade — the answer is never silently returned as if fully supported.
 - (–) A prose claim with no extractable file/symbol/line citation at all is treated as `SUPPORTED` by default (e.g., "this repository is written in Python") — the gate cannot catch a fabricated claim that names no verifiable repository artifact. Documented as a known, accepted scope limit, not a gap to close with a second LLM call.
 - (–) Live validation showed real answers sometimes score `PARTIALLY_SUPPORTED` (a genuine model citation not exactly string-matching evidence, e.g. paraphrased line ranges) — this is treated as correct, honest behavior, not a bug to suppress.
+
+---
+
+## ADR-021 — Append-Only Report Rows with a Widened CHECK Constraint (Sprint 6)
+
+**Status:** Accepted
+
+**Context**
+Sprint 6 needed a persistent representation for five report types (Repository Overview, Architecture, Dependency & Risk, Codebase Health, Developer Onboarding Guide), safely regeneratable, with regeneration never corrupting the last good result and repository re-indexing correctly invalidating stale reports (spec §11/§12). The `reports` table already existed (Sprint 0B skeleton: `report_type`, `content`, zero production rows — the same situation `conversations` was in pre-Sprint-5, per ADR context in `b4bca69510a2`) with a `CHECK` constraint on `report_type` limited to `('summary', 'onboarding', 'architecture', 'impact')`.
+
+**Decision**
+Extend the existing `Report` model additively rather than building a parallel storage system: widen `VALID_REPORT_TYPES` to add `dependency_risk` and `health` (mapping Sprint 6's five report types onto `summary`/`architecture`/`dependency_risk`/`health`/`onboarding`; `impact` stays reserved and unused — a distinct future single-PR/diff-impact feature per ADR-016, never repurposed for the Dependency & Risk report despite the naming similarity). Add a `status` lifecycle column (`pending`/`generating`/`ready`/`failed`) plus nullable structured-rendering columns (`title`, `summary`, `sections`, `evidence`, `diagrams`, `generation_metadata`, `repository_version`, `generated_at`, `error_message`). Reports are **append-only**: every generation attempt inserts a new row; nothing is ever updated in place. "The latest report" of a given `(repository_id, report_type)` is defined purely by `created_at` recency, and only a `status="ready"` row is ever served as the current report from `GET`; a `status="failed"` row is retrievable for diagnostics but never silently treated as valid. The existing CHECK-constraint-widening migration follows the same raw-DDL pattern (`op.execute` `DROP CONSTRAINT`/`ADD CONSTRAINT`) established in `b4bca69510a2` for `conversations.verification_status`, required because `CheckConstraint(..., name="report_type")` resolves to `ck_reports_report_type` under `models/base.py`'s naming convention — `op.create_check_constraint` would double-prefix it on an already-existing table.
+
+**Rationale**
+- Append-only writes make "a failed regeneration attempt corrupts the last good report" structurally impossible — there is no `UPDATE` path to a `ready` row at all, so a crash mid-generation can only ever produce an additional `failed` row alongside the still-intact previous `ready` one.
+- Reusing the existing `Report`/`reports` table (rather than introducing a second reports store) respects CLAUDE.md §9's three-database freeze and the spec's explicit instruction to verify Sprint 0–5 ownership decisions before changing persistent schema.
+- A `repository_version` fingerprint (reusing `app.retrieval.cache.get_corpus_version`'s exact format) on each row makes staleness detection a pure string comparison against the repository's current version, with no separate invalidation bookkeeping.
+- Keeping `content` (the original column) `NOT NULL` and populating it with a deterministic textual rendering of the same structured data preserves the pre-Sprint-6 contract without forcing a breaking column removal.
+
+**Consequences / Trade-offs**
+- (+) Regeneration, concurrent generation, and partial-failure handling all reduce to "insert one more row" — no locking, no in-place mutation races to reason about.
+- (+) A full generation history is available for free (`GET .../reports?latest_only=false`), useful for auditing report-quality drift over time without any extra schema.
+- (–) The table grows monotonically with every regeneration (including failed attempts) — acceptable at V1's expected report-generation frequency (developer-triggered, not continuous); a retention/pruning policy is the natural next step if this becomes a real storage concern, not solved here.
+- (–) `impact` remains a defined-but-unused `VALID_REPORT_TYPES` value for a second sprint running — an intentional reservation, not dead code to clean up, per ADR-016's scope boundary between this sprint's Dependency & Risk report and the distinct future single-PR/diff Impact Analysis feature.
+
+---
+
+## ADR-022 — `EvidenceConfidence` as a Distinct Vocabulary from `VerificationStatus` (Sprint 6)
+
+**Status:** Accepted
+
+**Context**
+Spec §10 requires every report statement to carry an explicit confidence label (`VERIFIED`/`DERIVED`/`PARTIAL`/`INSUFFICIENT_EVIDENCE`), distinguishing deterministic repository facts from derived analysis from AI interpretation. Sprint 5 already defined `app.ai.schemas.verification.VerificationStatus` (`SUPPORTED`/`PARTIALLY_SUPPORTED`/`INSUFFICIENT_EVIDENCE`/`CONTRADICTED`) for a related but narrower purpose: whether one `/ask` answer's citations verify against the evidence it was given.
+
+**Decision**
+Define a new, separate enum, `app.reports.schemas.EvidenceConfidence`, rather than reusing or renaming `VerificationStatus`. `VerificationStatus` remains AI-Engine-only, describing one LLM answer's citation-verification outcome. `EvidenceConfidence` describes the *provenance* of one report section/statement, with an explicit mapping (`app.reports.evidence.map_verification_to_confidence`) from the former to the latter wherever AI-synthesized report prose needs a confidence label:
+- A deterministic fact read directly from the database (a file count, an entry point path, a dependency-hotspot row) → `VERIFIED`.
+- A fact computed by combining/interpreting deterministic data without AI (a directory rollup, a risk classification, a diagram) → `DERIVED`.
+- AI-synthesized prose whose extracted citations fully verify against the evidence set (`VerificationStatus.SUPPORTED`) → `DERIVED` (the underlying facts were confirmed, even though the prose itself is model-generated).
+- AI-synthesized prose with some unverified citations (`VerificationStatus.PARTIALLY_SUPPORTED`) → `PARTIAL`.
+- AI-synthesized prose that could not be grounded at all (`VerificationStatus.INSUFFICIENT_EVIDENCE`) or whose citations are entirely fabricated (`VerificationStatus.CONTRADICTED`) → `INSUFFICIENT_EVIDENCE`, and the returned content is explicitly prefixed with an unverified-interpretation flag rather than silently presented as fact.
+
+**Rationale**
+- Collapsing the two enums would either narrow `VerificationStatus`'s meaning (a `/ask` answer's citation check is not the same claim as "how was this report section produced") or force reports to inherit AI-Engine-specific states (`CONTRADICTED`) that don't map cleanly onto pure database facts, which are never "contradicted," only present or absent.
+- A `CONTRADICTED` verification result and an `INSUFFICIENT_EVIDENCE` one both mean the same thing for a report consumer — "do not treat this as fact" — so collapsing them into one `EvidenceConfidence.INSUFFICIENT_EVIDENCE` value is a deliberate simplification for the reporting surface, not a loss of information (the underlying `VerificationStatus` is still recorded in `generation_metadata` for debugging).
+- Keeping the mapping as one small, explicitly documented function (rather than scattering the equivalence across generators) makes the confidence-labeling rule auditable in one place.
+
+**Consequences / Trade-offs**
+- (+) Report consumers (including the eventual frontend) reason about exactly four confidence states regardless of whether a section's content came from the database or from the LLM.
+- (+) `VerificationStatus`'s Sprint 5 meaning and callers are completely undisturbed — zero risk of an accidental Sprint 6 change to `/ask` behavior.
+- (–) Two conceptually related but distinct enums now exist in the codebase; a reviewer must know which one applies where. Mitigated by keeping them in clearly separate modules (`app.ai.schemas.verification` vs. `app.reports.schemas`) and documenting the mapping in one function's docstring.
+
+---
+
+## ADR-023 — Report Synthesis Reuses AI Engine Components, Not the `/ask` LangGraph (Sprint 6)
+
+**Status:** Accepted
+
+**Context**
+Spec §9 requires reports to use AI "only where it provides meaningful value" and explicitly forbids introducing a second LLM framework or bypassing the existing LangGraph architecture (CLAUDE.md §7/ADR-019: LangGraph orchestration is confined to `app.ai.engine.orchestrator`, built for the `intent → retrieve → context → reason → verify → format` pipeline shape of free-text Q&A). Report synthesis needs one narrow capability from that stack — turning a batch of already-assembled, already-verified facts into developer-friendly prose for several named sections in a single call — which does not fit the `/ask` graph's per-query, single-answer shape at all.
+
+**Decision**
+`app.reports.synthesis` reuses two Sprint 5 AI Engine **components** directly, never the compiled graph: `app.ai.llm.provider.get_llm_provider()`/`complete_with_retry()` for the raw LLM call (same provider abstraction, same Groq/Ollama backends, same retry/timeout policy — ADR-014 unaffected), and `app.ai.engine.verification.verify_answer()`'s regex-based citation-extraction mechanics, reused as-is to grounding-check AI-synthesized report prose against the report's own evidence set. No new prompt-orchestration framework, no second LangGraph instance, and no import of `app.ai.engine.orchestrator` or `app.ai.graph.state.AIGraphState` from `reports/`. At most one LLM call is made per report generation, batching every eligible section's narrative need into a single structured-JSON-output prompt (spec §14's "no unnecessary sequential LLM calls").
+
+**Rationale**
+- The `/ask` graph's stages (intent classification, per-query retrieval, a single question/answer turn, a bounded verification retry loop) solve a different problem than "synthesize prose for N known sections from M already-collected facts in one shot" — forcing report synthesis through it would mean either calling `/ask` N times (violating the single-call latency budget) or contorting the graph's state shape to fit a use case it wasn't designed for.
+- Reusing the LLM provider abstraction and the verification mechanics (rather than reimplementing either) means report synthesis inherits Sprint 5's already-tested retry/timeout/citation-checking behavior for free, and any future provider swap (ADR-014) automatically applies to reports too.
+- A single batched prompt, parsed as one JSON object, keeps latency bounded and predictable (measured live: ~1.3–2.4s per report needing synthesis, vs. Sprint 5's per-question `/ask` latency) and avoids the "second uncontrolled LLM hallucination layer" risk ADR-020 already rejected for verification — reused here rather than re-litigated.
+
+**Consequences / Trade-offs**
+- (+) Zero duplication of LLM-calling or citation-verification logic between `ai/` and `reports/` — a bugfix or provider change in either reused component benefits both call sites automatically.
+- (+) Malformed/non-JSON LLM output degrades to a deterministic-only report (`generation_metadata.ai_synthesis_failed=true`), never a crash — verified live via `test_reports_synthesis.py`'s malformed-output cases and confirmed structurally impossible to silently fabricate content, since every synthesized section is still grounding-checked before being attached.
+- (–) `dependency_risk` and `health` report types deliberately never request AI synthesis at all (spec §9's "do not make every report require an LLM call if deterministic generation is sufficient") — an intentional asymmetry across report types, not an oversight; documented in each generator's module docstring.
+
+---
+
+## ADR-024 — Deterministic Graph Data as the Sole Source of Truth for Mermaid Diagrams (Sprint 6)
+
+**Status:** Accepted
+
+**Context**
+Spec §15 requires architecture diagrams generated "from actual repository structure and relationship data" and explicitly forbids letting the LLM "freely hallucinate diagrams." Sprint 2B's `depends_on`-type relationships and `RepositoryIntelligence.dependency_hotspots` already provide real, resolved module-level dependency edges — the only question was how much of diagram construction, if any, the optional AI synthesis step (ADR-023) should be allowed to influence.
+
+**Decision**
+`app.reports.mermaid` builds both diagram types (`build_module_diagram`, `build_dependency_flow_diagram`) as pure, deterministic functions over real `depends_on` edges and `dependency_hotspots` rows — no LLM call anywhere in the diagram-construction path. Node aggregation (file paths and dotted module paths rolled up to a coarse "module" granularity), node-count capping (top ~25/~15 by dependency weight), and edge selection are all computed before AI synthesis ever runs; the synthesis stage (when it runs at all) only ever adds human-readable prose *about* an already-built diagram's contents into a separate report section — it is never given the ability to add, remove, or relabel a Mermaid node or edge. Two small, dedicated, unit-tested helpers (`_sanitize_node_id`, `_sanitize_mermaid_label`) guarantee output safety (collision-free alphanumeric ids, escaped label characters) independent of the diagram-construction logic.
+
+**Rationale**
+- Making the graph data structurally unreachable from the LLM call (rather than merely instructing the LLM not to hallucinate edges) is a stronger guarantee than a prompt rule — the diagram is fully built and validated before any AI code path executes.
+- Deterministic construction makes diagrams unit-testable with fixture data alone (`test_reports_mermaid.py`): valid `flowchart` header, bounded node count, no unescaped label characters, no edge referencing an undeclared node — none of which would be reliably testable if diagram text came from an LLM.
+- A capped, weight-ranked node set (rather than rendering every module) keeps diagrams legible for large repositories and is marked explicitly partial (a trailing Mermaid comment) rather than silently dropping data — satisfying spec §4's "where the graph is incomplete, explicitly mark the diagram... as partial."
+
+**Consequences / Trade-offs**
+- (+) A diagram can never contain a fabricated file, module, or relationship — every node and edge traces back to a real `File`/`Relationship`/`RepositoryIntelligence` row, verified live against `miguelgrinberg/microblog`'s actual dependency structure.
+- (+) Diagram generation costs no LLM latency or tokens at all — it runs as part of the deterministic-collection phase regardless of whether AI synthesis is enabled or fails for that report.
+- (–) Diagram node/edge labels are the raw module-path strings (e.g. `app.models`), not LLM-polished descriptions — acceptable given spec §15's explicit "LLM may provide labels/descriptions but must not invent graph edges" allowance was not exercised in this sprint (no generator currently asks the LLM to relabel diagram nodes); a future enhancement could pass the already-built node list to synthesis for label suggestions without changing this ADR's core guarantee.
