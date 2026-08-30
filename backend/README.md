@@ -109,7 +109,7 @@ alembic history
 1. Add/change a model in `app/models/`.
 2. If it's a new model, import it in `app/models/__init__.py` (Alembic's autogenerate and the startup schema check both rely on every model being imported so it registers with `Base.metadata`).
 3. `alembic revision --autogenerate -m "..."` — review the generated file in `app/db/migrations/versions/` before applying; autogenerate is a diff tool, not a guarantee.
-4. `alembic upgrade head` against your target database.
+4. `alembic upgrade head` against your  target database.
 5. Restart the backend — the lifespan schema check re-verifies every expected table exists.
 
 Migrations are **never** run automatically by the application or the Docker image — see the note in [Running with Docker](#running-with-docker).
