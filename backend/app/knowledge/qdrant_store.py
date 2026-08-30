@@ -142,6 +142,39 @@ async def delete_points_by_ids(client: AsyncQdrantClient, point_ids: list[uuid.U
     await client.delete(collection_name=COLLECTION_NAME, points_selector=[str(pid) for pid in point_ids])
 
 
+async def search_points(
+    client: AsyncQdrantClient, repository_id: uuid.UUID, vector: list[float], limit: int
+) -> list[models.ScoredPoint]:
+    """Semantic (vector) search scoped to a single repository.
+
+    Every call filters by ``repository_id`` — Sprint 4's retrieval
+    isolation guarantee is enforced here, at the one place a cross-
+    repository leak could otherwise happen, not left to callers to
+    remember.
+
+    Args:
+        client: The shared async Qdrant client.
+        repository_id: The repository to search within — no other
+            repository's points are ever considered.
+        vector: The query embedding.
+        limit: Maximum points to return.
+
+    Returns:
+        Scored points, highest similarity first (Qdrant's own ordering
+        for the collection's ``Cosine`` distance).
+    """
+    response = await client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=vector,
+        query_filter=models.Filter(
+            must=[models.FieldCondition(key="repository_id", match=models.MatchValue(value=str(repository_id)))]
+        ),
+        limit=limit,
+        with_payload=True,
+    )
+    return response.points
+
+
 async def delete_points_by_repository(client: AsyncQdrantClient, repository_id: uuid.UUID) -> None:
     """Delete every point belonging to a repository (reset / hard delete).
 

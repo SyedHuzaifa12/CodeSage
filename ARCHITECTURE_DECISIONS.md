@@ -385,4 +385,101 @@ Version 1 includes exactly: Repository Intelligence, Hybrid RAG, Lightweight Kno
 **Consequences / Trade-offs**
 - (+) Forces every design decision toward simplicity and shippability, reinforcing all prior ADRs in this document.
 - (+) Gives future versions (V2/V3) a stable, proven foundation to extend rather than an unfinished one to rescue.
+
+---
+
+## ADR-017 — Hybrid Retrieval Fusion (Sprint 4)
+
+**Status:** Accepted
+
+**Context**
+CodeSage's differentiator (per the Sprint 4 brief) is that retrieval must combine structural repository intelligence with semantic search, not behave as a generic single-source vector RAG pipeline. Three genuinely different retrieval sources now exist: Qdrant semantic search (Sprint 3), PostgreSQL symbol/file metadata (Sprints 2A/2B), and the relationship graph (Sprint 2B). A decision was needed on how their results combine into one ranked, explainable result set.
+
+**Decision**
+Fuse candidates via a deterministic, configurable linear scoring formula — `final = w_semantic·semantic + w_lexical·lexical + w_structural·structural + entry_point_boost? + hotspot_boost?` — computed in `app/retrieval/candidates.py::fuse_and_rank`. Weights live in `RetrievalSettings` (config, not code). Deduplication merges same-evidence candidates (by chunk id, then symbol id, then file id) before scoring, unioning their per-source scores rather than picking one source arbitrarily. Structural expansion is capped to one relationship hop from a semantic/lexical seed. Lexical search runs over `pg_trgm` trigram similarity on symbol/file names — not raw source text, which isn't persisted in Postgres by design (Sprint 3).
+
+**Rationale**
+- A linear, named-component formula is explainable and testable by construction — every result's score can be decomposed and audited, unlike a learned/black-box ranker (§6 of the Sprint 4 brief explicitly disallows inventing arbitrary ML scores).
+- Config-driven weights allow tuning retrieval quality without a code change or redeploy of scoring logic, and make future reranking (Sprint 5+) an additive change, not a rewrite.
+- One-hop-only structural expansion avoids unbounded graph traversal (explicitly out of scope) while still surfacing the single most valuable class of structural context (direct callers/callees/implementers/dependents).
+- Reusing `pg_trgm` (a built-in PostgreSQL extension) for lexical search avoids introducing a dedicated search engine (Elasticsearch/OpenSearch) that CLAUDE.md's "no unnecessary infrastructure" principle would otherwise rule out.
+
+**Consequences / Trade-offs**
+- (+) Ranking behavior is fully deterministic, unit-testable without any live infrastructure, and tunable via configuration alone.
+- (+) Every result carries its contributing sources and scores as evidence, satisfying the "evidence-first output" requirement for Sprint 5's future citations.
+- (–) A fixed absolute semantic-score floor (`semantic_min_score`) is an imperfect "no relevant result" signal for a small local embedding model on short code chunks — relevant and irrelevant cosine scores can land in overlapping ranges. Documented as a known limitation in `docs/SPRINT_LOG.md`; a proper fix (reranker/relevance classifier) is explicitly deferred, not solved here.
+- (–) Lexical search is scoped to symbol/file metadata, not full source text — a query for a literal string or comment inside a function body will not be found lexically (only semantically, if the embedding captures it).
 - (–) Genuinely useful V2 capabilities (e.g., technical debt detection) are deferred even where a user might want them sooner — any request to pull one forward must go through the Architecture-First Policy conflict process in `CLAUDE.md`, not be added silently.
+
+---
+
+## ADR-018 — Cross-Encoder Reranking: Implemented, Disabled by Default (Pre-Sprint-5 Hardening Pass)
+
+**Status:** Accepted
+
+**Context**
+Before Sprint 5, ADR-017's fusion formula was audited for a genuine, measurable quality gap: does a reranking stage — scoring candidates against the query's actual text, something fusion's cosine/trigram/relationship-type scores never do — materially improve retrieval quality, and at what latency cost? "Latency is a first-class design constraint" is stated explicitly in both the Sprint 4 and this hardening pass's briefs, so the answer had to come from a real benchmark, not intuition.
+
+**Decision**
+Implement cross-encoder reranking (`app/retrieval/reranking.py`, `Xenova/ms-marco-MiniLM-L-6-v2` via `fastembed` — no new dependency) behind the same provider-interface pattern as Sprint 3's embedding provider, applied only to fusion's top candidate pool (config-bounded) with per-candidate text truncated before scoring (cross-encoder cost scales roughly quadratically with sequence length). Ship it fully wired — config toggle, per-request API override, cache-key-aware — but with `RetrievalSettings.reranking_enabled` defaulting to `False`.
+
+**Rationale (from the actual benchmark, live, `miguelgrinberg/microblog`)**
+- At full chunk length (up to 3,500 chars) over a pool of 20: 4,900–8,000ms per query (20–30x the 211ms fusion-only baseline) for +4.8% MRR. Not a defensible default under a stated latency-first constraint.
+- Retuned (800-char truncation, pool of 10): 1,538ms (~7.3x baseline) for MRR 0.775 → 1.000 (every correct answer ranked #1). A real improvement, but Recall@K — whether the correct evidence is present in the top-K *at all* — was already 1.000 without it (once the deterministic test-intent fix, see below, closed Sprint 4's one gap). Sprint 5 will reason over the whole top-K evidence set, not solely rank #1, so the marginal value of near-perfect internal ordering is lower than raw retrieval latency.
+- A separate, deterministic, zero-latency-cost fix (`query_has_test_intent` + a test-file-path boost in `fuse_and_rank`) closed the one concrete quality gap Sprint 4 measured (the "which tests relate to X" case) without needing the reranker at all — reinforcing that the reranker's marginal contribution, at this stage, is ordering polish rather than correctness.
+
+**Consequences / Trade-offs**
+- (+) A materially better reranking path exists, fully tested and one config flag or one query parameter away, for whenever a use case justifies the latency (e.g., a future "deep research" mode, or if Sprint 5 evidence shows rank-order sensitivity that fusion-only can't fix).
+- (+) Nothing about Sprint 5's `RetrievalService.query()` contract changes if reranking is later flipped on — it's purely internal to the pipeline.
+- (–) The `semantic_min_score` limitation documented in ADR-017 remains technically true in isolation; it no longer matters end-to-end only because the test-intent fix addressed the specific case it was blocking, not because it was itself resolved.
+- (–) Query understanding (rule-based tokenization) and structural retrieval (one-hop only) were both re-evaluated in this pass and reconfirmed as sufficient for the current use case — see `docs/SPRINT_LOG.md`'s hardening-pass section for the reasoning; neither was pulled forward from Sprint 5 or expanded, per the Architecture-First Policy.
+
+---
+
+## ADR-019 — AI Engine Orchestration: LangGraph Boundary and Module Layout (Sprint 5)
+
+**Status:** Accepted
+
+**Context**
+Sprint 5 required transforming Retrieval's evidence into a grounded, cited answer via a LangGraph-orchestrated pipeline (per the frozen stack, ADR-015), while strictly preserving every Sprint 0–4 module boundary — no duplicating Retrieval/Knowledge logic, no direct Postgres/Qdrant access from the AI module, no LangChain retrieval/agent framework. The `app/ai/` skeleton (created empty in Sprint 0.1: `engine/{intent,retrieval,context,reasoning,verification,formatter,orchestrator}.py`, plus `graph/`, `llm/`, `memory/`, `prompts/`, `schemas/`, `exceptions/`, `services/`) needed a concrete contract for each file.
+
+**Decision**
+- `app/ai/engine/orchestrator.py` is the **only file in the codebase that imports LangGraph** — it builds and compiles the `StateGraph`, registers every other `engine/*.py` stage as a thin node, and owns the one bounded conditional edge (the verification retry loop, capped at `AISettings.max_verification_retries`, default 1).
+- `app/ai/graph/state.py` holds only the `AIGraphState` TypedDict (the data contract flowing through nodes) — kept separate from the graph's control-flow logic so the state shape can be depended on without pulling in LangGraph.
+- Every other `ai/engine/*.py` stage (`intent`, `retrieval`, `context`, `reasoning`, `verification`, `formatter`) is a plain async function with zero orchestration-framework dependency.
+- `ai/services/ai_service.py` (`AIOrchestratorService`) is the DI entry point `ai/api.py` depends on — mirrors `RetrievalService`/`KnowledgeService` exactly, and owns everything that wraps the pipeline (cache lookup/write, repository/indexed-state validation, the hard total-timeout, conversation persistence) rather than the pipeline's internal logic.
+- `ai/engine/retrieval.py` calls `RetrievalService.query()` directly and unmodified — semantic/lexical/structural/fusion/caching/reranking are never reimplemented; only intent-based `sources`/`top_k` tuning is added.
+- Chunk source text (never persisted, per Sprint 3) is read via `app.retrieval.reranking.read_candidate_text`, reused rather than reimplemented a third time.
+
+**Rationale**
+- Confining LangGraph to one file makes the "LangGraph owns orchestration/state transitions only" rule (spec §19) mechanically enforceable — a code reviewer only has one file to check.
+- `langgraph`'s `langchain-core` transitive dependency is pre-approved by ADR-015 (LangGraph is already named in the frozen stack); the codebase never imports anything from `langchain-core`/`langchain` directly — only `langgraph.graph.StateGraph`/`START`/`END`.
+- Mirroring the established `RetrievalService`/`KnowledgeService` DI pattern for `AIOrchestratorService` means `ai/api.py` looks exactly like `retrieval/api.py`/`knowledge/api.py` — no second API architecture, no new pattern to learn.
+
+**Consequences / Trade-offs**
+- (+) The orchestration framework is swappable in principle without touching any stage's logic or the API contract — only `orchestrator.py` and `graph/state.py` would change.
+- (+) Every stage is independently unit-testable with plain function calls and monkeypatching, with no LangGraph test harness needed (see `test_ai_orchestrator.py`, which does exercise the real compiled graph, but only mocks the two stage functions that touch external services).
+- (–) `ai/services/` vs. `ai/engine/orchestrator.py`'s division of "pipeline wrapping" vs. "pipeline internals" is a judgment call made within an empty skeleton, not dictated by the spec — documented here as the resolution, not asked as a question, since it was reversible and internal.
+
+---
+
+## ADR-020 — Verification Gate: Deterministic-Only, No Second LLM Call (Sprint 5)
+
+**Status:** Accepted
+
+**Context**
+Spec §8 requires a verification gate as "a critical component" but explicitly warns: "do not allow verification to become another uncontrolled LLM hallucination layer." A second LLM call to "check" the first LLM's answer would add latency, cost, and a new (unverifiable) source of error, without a stronger correctness guarantee than a properly-scoped deterministic check.
+
+**Decision**
+`app/ai/engine/verification.py` performs deterministic, regex-based extraction of every file-path-shaped, `symbol()`-shaped, and `line(s) N[-M]`-shaped citation in the LLM's answer text, and checks each one against the *exact* evidence set the LLM was given (`file_path`, `symbol_name`, `start_line`/`end_line` — all already-verified, non-fabricated fields from `RetrievalService`/Sprint 2A's parsed symbols). No LLM call is involved in verification. A sufficiency pre-check (`pre_check_evidence_sufficiency`) runs *before* reasoning, short-circuiting to `INSUFFICIENT_EVIDENCE` without spending an LLM call when evidence is empty or below a relevance floor.
+
+**Rationale**
+- Every field being checked against is either a database-derived fact (Sprint 2A symbol data) or a `RetrievalService` score — never another LLM's opinion — so verification result correctness doesn't compound with model uncertainty.
+- A citation-extraction approach (rather than a full NL claim-verification approach) is intentionally conservative: it catches the single highest-value failure mode (a fabricated file/symbol/line reference) without attempting the much harder, genuinely AI-complete problem of verifying arbitrary prose claims — which would itself require an LLM and reintroduce the exact risk this ADR avoids.
+- Zero added latency cost beyond the regex/set-membership checks themselves (single-digit milliseconds, confirmed in live validation).
+
+**Consequences / Trade-offs**
+- (+) Verification is exactly as reliable as the evidence data it checks against — which is Sprint 2A/2B/4's already-tested parsed/retrieved data, not a new trust surface.
+- (+) `CONTRADICTED`/`INSUFFICIENT_EVIDENCE` results are handled by a bounded retry (broadened retrieval + a stricter re-prompt, capped at 1 retry) and, on final failure, a deterministic downgrade — the answer is never silently returned as if fully supported.
+- (–) A prose claim with no extractable file/symbol/line citation at all is treated as `SUPPORTED` by default (e.g., "this repository is written in Python") — the gate cannot catch a fabricated claim that names no verifiable repository artifact. Documented as a known, accepted scope limit, not a gap to close with a second LLM call.
+- (–) Live validation showed real answers sometimes score `PARTIALLY_SUPPORTED` (a genuine model citation not exactly string-matching evidence, e.g. paraphrased line ranges) — this is treated as correct, honest behavior, not a bug to suppress.

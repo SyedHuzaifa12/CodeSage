@@ -18,3 +18,5 @@ numpy
 pytest
 pytest-asyncio
 httpx
+langgraph
+groq
