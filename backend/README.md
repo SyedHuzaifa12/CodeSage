@@ -72,7 +72,7 @@ All ports, credentials, and app metadata are driven by the root `.env` file (see
 
 ## Database Models & Migrations
 
-Six SQLAlchemy 2.0 models (`app/models/`), matching CLAUDE.md §9 exactly — **models represent data only**: no business methods, no CRUD, no service logic.
+Six SQLAlchemy 2.0 models (`app/models/`), matching CLAUDE.md §9 exactly — **models represent data only**: no  business methods, no CRUD, no service logic.
 
 | Model | Table | Notes |
 |---|---|---|
