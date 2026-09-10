@@ -5,7 +5,7 @@ FastAPI backend for CodeSage, built as a **Modular Monolith** per the architectu
 ## Running Locally (no Docker)
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txtd
 cp .env.example .env   # first time only — defaults point at localhost
 uvicorn app.main:app --reload
 ```
