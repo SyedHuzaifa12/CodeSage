@@ -20,7 +20,7 @@ alembic upgrade head                          # from backend/ — creates the ta
 Swagger UI at `/docs` now shows the three health endpoints; no business routes exist yet.
 
 ## Running with Docker
-
+ 
 The full local stack (PostgreSQL, Redis, Qdrant, backend) is defined in the root [`docker-compose.yml`](../docker-compose.yml).
 
 ```bash
