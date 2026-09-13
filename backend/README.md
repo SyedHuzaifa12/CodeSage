@@ -25,7 +25,7 @@ The full local stack (PostgreSQL, Redis, Qdrant, backend) is defined in the root
 
 ```bash
 # from the project root
-cp .env.example .env      # first time only
+cp .env.example .env      # first time only 
 docker compose up --build
 ```
 
