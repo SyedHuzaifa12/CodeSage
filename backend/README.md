@@ -13,7 +13,7 @@ uvicorn app.main:app --reload
 PostgreSQL, Redis, and Qdrant must be reachable **and PostgreSQL must have its schema migrated** at startup — the app fails fast otherwise (see [Application Lifespan](#application-lifespan)). The simplest way to satisfy that locally is to run  the data layer via Docker while iterating on the backend directly on the host:
 
 ```bash
-docker compose up postgres redis qdrant -d   # from the project root
+docker compose up postgres redis qdrant -d   # from the project root 
 alembic upgrade head                          # from backend/ — creates the tables
 ```
 
