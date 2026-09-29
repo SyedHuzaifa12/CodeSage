@@ -1,60 +1,97 @@
 "use client";
 
-import { useState } from "react";
 import { ChevronRight, File, Folder } from "lucide-react";
+import { isFolderNode } from "@/lib/graphModel";
 import type { TreeNode } from "@/lib/types/workspace";
 import { cn } from "@/lib/utils";
 
+export type FileMarker = "entry" | "hotspot" | "orphan";
+
+const MARKER_CLASS: Record<FileMarker, string> = {
+  entry: "bg-cyan",
+  hotspot: "bg-violet",
+  orphan: "border border-dotted border-text-tertiary",
+};
+
+function formatSize(b?: number | null): string {
+  if (b == null) return "";
+  if (b >= 1e6) return `${(b / 1e6).toFixed(1)} MB`;
+  if (b >= 1e3) return `${(b / 1e3).toFixed(1)} KB`;
+  return `${b} B`;
+}
+
 /**
- * Desktop file tree (Explorer). Recursive, collapsible. Sprint 7 note
- * (Design System §10): true windowed virtualization is a documented
- * follow-up for repositories with thousands of files — out of scope for
- * this sprint's validation fixtures (flask-blog/microblog, both well
- * under that threshold) but flagged in the implementation spec.
+ * Controlled file tree over GET /tree. The backend emits `type: "folder"`
+ * (the Sprint 7 tree only recognised `"directory"`, so no folder could be
+ * expanded) — `isFolderNode` accepts both.
  */
-interface FileTreeProps {
+export function FileTree({
+  nodes,
+  expanded,
+  onToggle,
+  onSelect,
+  selectedPath,
+  markers,
+  depth = 0,
+}: {
   nodes: TreeNode[];
+  expanded: Set<string>;
+  onToggle: (path: string) => void;
+  onSelect: (node: TreeNode) => void;
+  selectedPath: string | null;
+  markers?: Map<string, FileMarker>;
   depth?: number;
-  onSelect?: (n: TreeNode) => void;
-  selectedPath?: string | null;
-}
-
-export function FileTree({ nodes, depth = 0, onSelect, selectedPath = null }: FileTreeProps) {
+}) {
   return (
-    <ul role={depth === 0 ? "tree" : "group"} className="flex flex-col">
-      {nodes.map((node) => (
-        <TreeRow key={node.path} node={node} depth={depth} onSelect={onSelect} selectedPath={selectedPath} />
-      ))}
+    <ul
+      role={depth === 0 ? "tree" : "group"}
+      aria-label={depth === 0 ? "File tree" : undefined}
+      className={cn("m-0 list-none p-0", depth > 0 && "ml-[9px] border-l border-border-subtle pl-2.5")}
+    >
+      {nodes.map((node) => {
+        const folder = isFolderNode(node);
+        const open = folder && expanded.has(node.path);
+        const marker = markers?.get(node.path);
+        return (
+          <li key={node.path} role="treeitem" aria-expanded={folder ? open : undefined} aria-selected={!folder ? node.path === selectedPath : undefined}>
+            <button
+              onClick={() => (folder ? onToggle(node.path) : onSelect(node))}
+              aria-current={!folder && node.path === selectedPath ? "true" : undefined}
+              className={cn(
+                "flex min-h-[28px] w-full items-center gap-[7px] rounded-[6px] px-2 py-[3px] text-left font-mono text-[12.5px] transition-colors",
+                !folder && node.path === selectedPath
+                  ? "bg-[linear-gradient(90deg,var(--cs-violet-tint),oklch(0.75_0.13_300/0.03))] text-text-primary shadow-[inset_2px_0_0_var(--cs-accent-violet)]"
+                  : "text-text-secondary hover:bg-surface-1 hover:text-text-primary",
+              )}
+            >
+              {folder ? (
+                <ChevronRight size={13} className={cn("flex-none text-text-tertiary transition-transform duration-standard", open && "rotate-90")} aria-hidden="true" />
+              ) : (
+                <span className="w-[13px] flex-none" />
+              )}
+              {folder ? (
+                <Folder size={13} strokeWidth={1.6} className="flex-none text-text-tertiary" aria-hidden="true" />
+              ) : (
+                <File size={13} strokeWidth={1.6} className="flex-none text-text-tertiary" aria-hidden="true" />
+              )}
+              <span className="min-w-0 truncate">{node.name}</span>
+              {marker && <span className={cn("h-1.5 w-1.5 flex-none rounded-full", MARKER_CLASS[marker])} title={marker} aria-label={marker} />}
+              {!folder && <span className="ml-auto flex-none pl-1.5 text-[10.5px] text-text-tertiary">{formatSize(node.size_bytes)}</span>}
+            </button>
+            {open && node.children && (
+              <FileTree
+                nodes={node.children}
+                expanded={expanded}
+                onToggle={onToggle}
+                onSelect={onSelect}
+                selectedPath={selectedPath}
+                markers={markers}
+                depth={depth + 1}
+              />
+            )}
+          </li>
+        );
+      })}
     </ul>
-  );
-}
-
-function TreeRow({ node, depth, onSelect, selectedPath }: { node: TreeNode; depth: number; onSelect?: (n: TreeNode) => void; selectedPath: string | null }) {
-  const [open, setOpen] = useState(depth === 0);
-  const isDir = node.type === "directory" && node.children;
-
-  return (
-    <li role="treeitem" aria-expanded={isDir ? open : undefined} aria-selected={node.path === selectedPath}>
-      <button
-        onClick={() => (isDir ? setOpen((v) => !v) : onSelect?.(node))}
-        className="flex w-full items-center gap-1.5 rounded-sm py-1 text-left font-mono text-[12px] text-text-secondary hover:text-text-primary focus-visible:outline-2"
-        style={{ paddingLeft: depth * 16 }}
-      >
-        {isDir ? (
-          <ChevronRight size={12} className={cn("flex-shrink-0 transition-transform", open && "rotate-90")} aria-hidden="true" />
-        ) : (
-          <span className="w-3 flex-shrink-0" />
-        )}
-        {isDir ? (
-          <Folder size={13} strokeWidth={1.6} className="flex-shrink-0 text-text-tertiary" aria-hidden="true" />
-        ) : (
-          <File size={13} strokeWidth={1.6} className="flex-shrink-0 text-text-tertiary" aria-hidden="true" />
-        )}
-        <span className="truncate">{node.name}</span>
-      </button>
-      {isDir && open && node.children && (
-        <FileTree nodes={node.children} depth={depth + 1} onSelect={onSelect} selectedPath={selectedPath} />
-      )}
-    </li>
   );
 }

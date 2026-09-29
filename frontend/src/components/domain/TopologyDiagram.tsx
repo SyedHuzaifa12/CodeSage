@@ -1,124 +1,180 @@
 "use client";
 
-import { computeRadialLayout } from "@/lib/radialLayout";
+import { useMemo, useState } from "react";
+import { forceLayout, nodeRadius } from "@/lib/forceLayout";
+import { buildGraphModel, cycleEdgeKeys, edgeKey, neighborsOf, nodeLabel, sharedPrefixDepth } from "@/lib/graphModel";
 import type { GraphEdge } from "@/lib/types/workspace";
 
 /**
- * Overview's large annotated topology diagram (Design System §17): the
- * dominant visual on the page, ported in spirit from Main.dc.html's
- * "REPOSITORY TOPOLOGY" panel — radial layout, violet root/hub nodes,
- * mono file labels, an annotated leader-line callout for the hotspot
- * count. Built from REAL /call-graph or /dependency-graph data — never
- * placeholder nodes.
+ * Overview's repository topology (Design System §17): the real resolved
+ * dependency graph, capped to the most connected modules, laid out by a
+ * deterministic force layout. Hotspots are ringed in violet, edges that
+ * close a detected cycle are red, orphan files are dashed. Every edge is
+ * observed — the backend has no "inferred" relationship class.
  */
 export function TopologyDiagram({
   nodes,
   edges,
-  hotspotCount,
-  hotspotFiles,
+  hotspots,
+  cycles = [],
+  orphans,
+  cap = 24,
+  width = 760,
+  height = 700,
   onNodeClick,
+  layoutKey = "topo",
 }: {
   nodes: string[];
   edges: GraphEdge[];
-  hotspotCount?: number;
-  hotspotFiles?: Set<string>;
+  hotspots?: Set<string>;
+  cycles?: string[][];
+  orphans?: Set<string>;
+  cap?: number;
+  width?: number;
+  height?: number;
   onNodeClick?: (node: string) => void;
+  layoutKey?: string;
 }) {
-  const layout = computeRadialLayout(nodes, edges);
+  const [hover, setHover] = useState<string | null>(null);
+  const model = useMemo(() => buildGraphModel(nodes, edges, { cap }), [nodes, edges, cap]);
+  const positions = useMemo(
+    () => forceLayout(model.nodes, model.edges, { width, height, key: layoutKey }),
+    [model, width, height, layoutKey],
+  );
+  const cycleKeys = useMemo(() => cycleEdgeKeys(cycles), [cycles]);
+  const prefixDepth = useMemo(() => sharedPrefixDepth(model.nodes), [model.nodes]);
 
-  if (layout.nodes.length === 0) {
+  if (model.nodes.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center font-mono text-[11px] text-text-tertiary">
-        No resolved dependencies yet.
+      <div className="grid min-h-[220px] place-items-center rounded-[12px] border border-dashed border-border-subtle px-6 py-10 text-center">
+        <div>
+          <p className="font-mono text-[11.5px] text-text-secondary">No resolved dependencies yet.</p>
+          <p className="mx-auto mt-2 max-w-[42ch] text-small text-text-tertiary">
+            The topology appears once imports resolve between parsed files. Only Python, JavaScript, TypeScript and Java are parsed.
+          </p>
+        </div>
       </div>
     );
   }
-
-  const calloutNode = layout.nodes.find((n) => n.ring === 1) ?? layout.nodes[0];
+  const pos = new Map(model.nodes.map((n, i) => [n, positions[i]]));
+  const maxDegree = Math.max(1, ...model.nodes.map((n) => model.degree.get(n) ?? 0));
+  const rank = new Map([...model.nodes].sort((a, b) => (model.degree.get(b) ?? 0) - (model.degree.get(a) ?? 0)).map((n, i) => [n, i]));
+  const near = hover ? neighborsOf(model.edges, hover) : null;
+  const hoverPos = hover ? pos.get(hover) : null;
 
   return (
-    <svg
-      width="100%"
-      height="100%"
-      viewBox={`0 0 ${layout.width} ${layout.height}`}
-      role="img"
-      aria-label={`Dependency topology: ${layout.nodes.length} of ${nodes.length} modules shown, ${layout.edges.length} dependencies, ${hotspotCount ?? 0} hotspots.`}
-    >
-      <circle cx={layout.width / 2} cy={layout.height / 2} r={120} fill="none" stroke="oklch(1 0 0 / 0.035)" />
-      <circle cx={layout.width / 2} cy={layout.height / 2} r={210} fill="none" stroke="oklch(1 0 0 / 0.025)" />
-
-      <g strokeWidth={1.2} fill="none">
-        {layout.edges.map((edge, i) => {
-          const a = layout.nodes.find((n) => n.id === edge.source);
-          const b = layout.nodes.find((n) => n.id === edge.target);
-          if (!a || !b) return null;
-          const strong = a.ring === 0 || b.ring === 0;
+    <div className="relative w-full">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="block h-auto w-full overflow-visible"
+        role="img"
+        aria-label={`Dependency topology: ${model.nodes.length} modules shown of ${model.totalNodes}, ${model.edges.length} edges${cycles.length ? `, ${cycles.length} circular dependencies` : ""}. Hotspots ringed in violet; cycle edges in red.`}
+      >
+        <defs>
+          <radialGradient id="cs-tb" cx="35%" cy="30%" r="75%">
+            <stop offset="0" stopColor="oklch(0.32 0.014 280)" />
+            <stop offset="1" stopColor="oklch(0.2 0.01 280)" />
+          </radialGradient>
+          <radialGradient id="cs-th" cx="35%" cy="30%" r="75%">
+            <stop offset="0" stopColor="oklch(0.46 0.1 300)" />
+            <stop offset="1" stopColor="oklch(0.25 0.06 300)" />
+          </radialGradient>
+          <radialGradient id="cs-tg">
+            <stop offset="0" stopColor="oklch(0.75 0.13 300 / 0.35)" />
+            <stop offset="1" stopColor="oklch(0.75 0.13 300 / 0)" />
+          </radialGradient>
+        </defs>
+        {model.edges.map((e) => {
+          const a = pos.get(e.source)!;
+          const b = pos.get(e.target)!;
+          const cyc = cycleKeys.has(edgeKey(e));
+          const on = hover && (e.source === hover || e.target === hover);
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dd = Math.hypot(dx, dy) || 1;
+          const bend = Math.min(40, dd * 0.12) * (cyc ? 1.6 : 1);
+          const mx = (a.x + b.x) / 2 - (dy / dd) * bend;
+          const my = (a.y + b.y) / 2 + (dx / dd) * bend;
           return (
-            <line
-              key={i}
-              x1={a.x}
-              y1={a.y}
-              x2={b.x}
-              y2={b.y}
-              stroke={strong ? "oklch(0.42 0.02 280)" : "oklch(0.34 0.02 280)"}
-              strokeWidth={strong ? 2 : 1}
+            <path
+              key={edgeKey(e)}
+              d={`M${a.x.toFixed(1)} ${a.y.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`}
+              fill="none"
+              stroke={cyc ? "var(--cs-danger)" : on ? "var(--cs-violet-line)" : "oklch(1 0 0 / 0.16)"}
+              strokeWidth={cyc ? 1.3 : 1}
+              style={{ opacity: hover && !on ? 0.12 : 1, transition: "opacity 200ms, stroke 200ms" }}
             />
           );
         })}
-      </g>
-
-      <g fontFamily="var(--font-plex-mono)" fontSize={12} fill="oklch(0.88 0.006 280)">
-        {layout.nodes.map((node) => {
-          const isHotspot = hotspotFiles?.has(node.id);
-          const label = node.id.length > 24 ? `…${node.id.slice(-22)}` : node.id;
-          const radius = node.ring === 0 ? 9 : node.ring === 1 ? 8 : 4.5;
+        {model.nodes.map((n) => {
+          const p = pos.get(n)!;
+          const r = nodeRadius(model.degree.get(n) ?? 0, maxDegree) * 1.15;
+          const hot = hotspots?.has(n);
+          const orphan = orphans?.has(n);
+          const dim = hover && hover !== n && !near?.has(n);
+          const label = nodeLabel(n, "dependency", prefixDepth);
           return (
             <g
-              key={node.id}
-              onClick={onNodeClick ? () => onNodeClick(node.id) : undefined}
-              style={onNodeClick ? { cursor: "pointer" } : undefined}
+              key={n}
+              role={onNodeClick ? "link" : undefined}
+              tabIndex={onNodeClick ? 0 : undefined}
+              aria-label={`${n}, ${model.degree.get(n)} connections${hot ? ", dependency hotspot" : ""}${orphan ? ", orphan file" : ""}`}
+              onMouseEnter={() => setHover(n)}
+              onMouseLeave={() => setHover(null)}
+              onFocus={() => setHover(n)}
+              onBlur={() => setHover(null)}
+              onClick={() => onNodeClick?.(n)}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && onNodeClick) {
+                  e.preventDefault();
+                  onNodeClick(n);
+                }
+              }}
+              style={{ cursor: onNodeClick ? "pointer" : undefined, opacity: dim ? 0.18 : 1, transition: "opacity 200ms", outline: "none" }}
             >
+              {hot && <circle cx={p.x} cy={p.y} r={r * 2.4} fill="url(#cs-tg)" pointerEvents="none" />}
+              {hot && <circle cx={p.x} cy={p.y} r={r + 5} fill="none" stroke="var(--cs-accent-violet)" strokeWidth={1.4} />}
               <circle
-                cx={node.x}
-                cy={node.y}
-                r={radius}
-                fill={node.ring === 0 ? "oklch(0.85 0.13 300)" : node.ring === 1 ? "none" : "oklch(0.58 0.02 280)"}
-                stroke={node.ring <= 1 ? "oklch(0.85 0.13 300)" : undefined}
-                strokeWidth={node.ring === 1 ? 1.8 : undefined}
+                cx={p.x}
+                cy={p.y}
+                r={r}
+                fill={hot ? "url(#cs-th)" : "url(#cs-tb)"}
+                stroke={orphan ? "var(--cs-text-tertiary)" : hover === n ? "oklch(1 0 0 / 0.6)" : "oklch(1 0 0 / 0.28)"}
+                strokeWidth={1.2}
+                strokeDasharray={orphan ? "1.5 2.5" : undefined}
               />
-              {isHotspot && node.ring === 1 && (
-                <circle cx={node.x} cy={node.y} r={radius + 7} fill="none" stroke="oklch(0.75 0.13 300 / 0.25)" strokeWidth={1} />
-              )}
-              <text x={node.x + radius + 6} y={node.y + 4} fill={node.ring === 2 ? "oklch(0.6 0.01 280)" : undefined}>
+              <text
+                x={p.x}
+                y={p.y + r + 14}
+                textAnchor="middle"
+                fontFamily="var(--font-plex-mono)"
+                fontSize={(rank.get(n) ?? 99) < 6 ? 11.5 : 10.5}
+                fontWeight={(rank.get(n) ?? 99) < 6 ? 500 : 400}
+                fill={(rank.get(n) ?? 99) < 6 || hover === n ? "var(--cs-text-primary)" : "var(--cs-text-secondary)"}
+                stroke="var(--cs-bg)"
+                strokeWidth={3.5}
+                paintOrder="stroke"
+                strokeLinejoin="round"
+                pointerEvents="none"
+              >
                 {label}
               </text>
             </g>
           );
         })}
-      </g>
-
-      {hotspotCount !== undefined && hotspotCount > 0 && (
-        <>
-          <line
-            x1={calloutNode.x + 8}
-            y1={calloutNode.y - 8}
-            x2={calloutNode.x + 90}
-            y2={calloutNode.y - 60}
-            stroke="oklch(0.55 0.01 280 / 0.4)"
-            strokeWidth={1}
-          />
-          <text
-            x={calloutNode.x + 94}
-            y={calloutNode.y - 57}
-            fontFamily="var(--font-newsreader)"
-            fontStyle="italic"
-            fontSize={13}
-            fill="oklch(0.8 0.01 280)"
-          >
-            {hotspotCount} hotspot{hotspotCount === 1 ? "" : "s"}
-          </text>
-        </>
+      </svg>
+      {hover && hoverPos && (
+        <div
+          className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-[calc(100%+14px)] whitespace-nowrap rounded-[7px] border border-border-strong bg-surface-2 px-2.5 py-1.5 font-mono text-[11px] text-text-primary"
+          style={{ left: `${(hoverPos.x / width) * 100}%`, top: `${(hoverPos.y / height) * 100}%` }}
+        >
+          {hover}
+          <br />
+          <span className="text-text-tertiary">
+            {model.inDegree.get(hover)} incoming · {model.outDegree.get(hover)} outgoing{hotspots?.has(hover) ? " · hotspot" : ""}
+          </span>
+        </div>
       )}
-    </svg>
+    </div>
   );
 }

@@ -15,6 +15,7 @@ const config: Config = {
         bg: "var(--cs-bg)",
         "surface-1": "var(--cs-surface-1)",
         "surface-2": "var(--cs-surface-2)",
+        "surface-3": "var(--cs-surface-3)",
         "border-subtle": "var(--cs-border-subtle)",
         "border-strong": "var(--cs-border-strong)",
         "text-primary": "var(--cs-text-primary)",

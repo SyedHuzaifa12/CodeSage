@@ -68,3 +68,14 @@ export function useRefreshWorkspace() {
     onSuccess: (_data, id) => client.invalidateQueries({ queryKey: queryKeys.workspace(id) }),
   });
 }
+
+export function useResetWorkspace() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => workspaceApi.reset(id),
+    onSuccess: (_data, id) => {
+      client.invalidateQueries({ queryKey: ["repositories", id] });
+      client.invalidateQueries({ queryKey: queryKeys.repositories() });
+    },
+  });
+}

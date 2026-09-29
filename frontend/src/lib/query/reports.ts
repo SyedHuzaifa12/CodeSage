@@ -30,6 +30,7 @@ export function useGenerateReport() {
     onSuccess: (_data, vars) => {
       client.invalidateQueries({ queryKey: queryKeys.report(vars.id, vars.type) });
       client.invalidateQueries({ queryKey: queryKeys.reportsList(vars.id, true) });
+      client.invalidateQueries({ queryKey: queryKeys.reportsList(vars.id, false) });
     },
   });
 }

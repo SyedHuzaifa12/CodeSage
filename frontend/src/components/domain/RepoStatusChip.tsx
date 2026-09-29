@@ -1,58 +1,51 @@
 import type { IndexingStatus, RepositoryStatus } from "@/lib/types/repository";
-import { cn } from "@/lib/utils";
+import { cn, formatRelativeTime } from "@/lib/utils";
 
-const LABELS: Record<string, string> = {
-  pending: "Queued",
-  cloning: "Cloning",
-  ready: "Ready to index",
-  failed: "Failed",
-  deleted: "Deleted",
-  not_started: "Not indexed",
-  indexing: "Indexing",
-  indexed: "Indexed",
-};
-
-function colorFor(status: RepositoryStatus, indexingStatus: IndexingStatus): string {
-  if (status === "failed" || indexingStatus === "failed") return "var(--cs-danger)";
-  if (indexingStatus === "indexed") return "var(--cs-success)";
-  if (status === "cloning" || indexingStatus === "indexing") return "var(--cs-accent-violet)";
-  return "var(--cs-text-tertiary)";
+/**
+ * Repo status chip — the ONE place repository/indexing status maps to a UI
+ * label (Design System §4 / prototype spec §4.2–4.3). Never re-derived per page.
+ */
+export function repoStatusLabel(status: RepositoryStatus, indexingStatus: IndexingStatus): string {
+  if (status === "failed") return "Failed";
+  if (status === "pending") return "Queued";
+  if (status === "cloning") return "Cloning";
+  if (indexingStatus === "indexing") return "Indexing";
+  if (indexingStatus === "failed") return "Index failed";
+  if (indexingStatus === "indexed") return "Indexed";
+  return "Ready to index";
 }
 
-/** Repo status chip (Design System §9.4 / §4's onboarding status table). */
 export function RepoStatusChip({
   status,
   indexingStatus,
+  updatedAt,
   className,
 }: {
   status: RepositoryStatus;
   indexingStatus: IndexingStatus;
+  /** When provided on an indexed repository, appends "· 2h ago". */
+  updatedAt?: string;
   className?: string;
 }) {
-  const label =
-    status === "failed" || indexingStatus === "failed"
-      ? "Failed"
-      : indexingStatus === "indexed"
-        ? "Indexed"
-        : status === "ready"
-          ? indexingStatus === "indexing"
-            ? "Indexing"
-            : "Ready to index"
-          : LABELS[status] ?? status;
-  const color = colorFor(status, indexingStatus);
-  const pulsing = status === "pending" || status === "cloning" || indexingStatus === "indexing";
-
+  const label = repoStatusLabel(status, indexingStatus);
+  const failed = status === "failed" || indexingStatus === "failed";
+  const indexed = !failed && indexingStatus === "indexed";
+  const active = !failed && (status === "cloning" || indexingStatus === "indexing");
+  const tone = failed
+    ? "text-danger border-danger/40 bg-danger/10"
+    : indexed
+      ? "text-success border-success/35 bg-success/[0.06]"
+      : active
+        ? "text-violet border-[var(--cs-violet-line)] bg-[var(--cs-violet-tint)]"
+        : "";
   return (
-    <span
-      className={cn("inline-flex items-center gap-1.5 font-mono text-[10.5px]", className)}
-      style={{ color }}
-    >
+    <span className={cn("cs-chip", tone, className)} role={active ? "status" : undefined}>
       <span
-        className={cn("h-[5px] w-[5px] rounded-full", pulsing && "animate-pulse")}
-        style={{ background: color }}
+        className={cn("cs-chip-dot", active && "cs-pulse", !failed && !indexed && !active && "bg-text-tertiary")}
         aria-hidden="true"
       />
-      {label.toUpperCase()}
+      {label}
+      {indexed && updatedAt ? ` · ${formatRelativeTime(updatedAt)}` : ""}
     </span>
   );
 }

@@ -1,131 +1,77 @@
 "use client";
 
-import { RIBBON_STAGE_LABELS, RIBBON_STAGE_ORDER, type RibbonStageKey } from "@/lib/reasoningRibbon";
 import { getConfidenceSpec } from "@/lib/confidence";
+import { RIBBON_STAGE_LABELS, RIBBON_STAGE_ORDER, type RibbonStageKey } from "@/lib/reasoningRibbon";
 import type { VerificationStatus } from "@/lib/types/ai";
 import { cn } from "@/lib/utils";
 
+export type StageState = "pending" | "active" | "done" | "skipped";
+
 /**
- * Signature device #4 — Reasoning Ribbon (Design System §17-D).
- *
- * A slim vertical sequence of four dots (Retrieve · Evidence · Reason ·
- * Verify), connected by a thin line, filled in as each stage completes.
- * This is literally Sprint 5's LangGraph pipeline stages (see
- * lib/reasoningRibbon.ts for the exact stage-collapse mapping) made
- * visible as product identity. Ported from the approved canvas
- * (`Ask.dc.html`'s `.cs-ribbon-dot`/`.cs-ribbon-line` rules, both the
- * "complete" and "mid-pipeline thinking" states).
- *
- * Built against a streaming-shaped interface (Design System §13): the Ask
- * page drives `stageStates` from the same AnswerStream callbacks used for
- * the token reveal, so a future real-streaming backend updates this
- * component with zero API changes.
+ * Signature device #4 — Reasoning Ribbon (Design System §17-D): the AI
+ * Engine's own pipeline made visible beside every answer. Four
+ * reader-facing stages mapped from the real seven (lib/reasoningRibbon.ts);
+ * once an answer lands each stage shows its real latency, "skipped" when
+ * the pipeline declined before the LLM call, and the final dot takes the
+ * verification colour.
  */
-export type StageState = "pending" | "active" | "done";
-
-interface ReasoningRibbonProps {
-  /** One state per RIBBON_STAGE_ORDER entry: [retrieve, evidence, reason, verify]. */
-  stageStates: Record<RibbonStageKey, StageState>;
-  /** Colors the final ("verify") dot once done, using the shared confidence table. */
-  finalStatus?: VerificationStatus;
-  size?: "sm" | "md";
-  className?: string;
-}
-
-export function ReasoningRibbon({ stageStates, finalStatus, size = "md", className }: ReasoningRibbonProps) {
-  const dotSize = size === "sm" ? 5 : 6;
-  const lineHeight = size === "sm" ? 7 : 9;
-
-  return (
-    <div
-      className={cn("flex flex-shrink-0 flex-col items-center pt-1", className)}
-      role="img"
-      aria-label={reasoningRibbonSummary(stageStates, finalStatus)}
-    >
-      {RIBBON_STAGE_ORDER.map((key, i) => {
-        const state = stageStates[key];
-        const isLast = i === RIBBON_STAGE_ORDER.length - 1;
-        const doneColor =
-          isLast && state === "done" && finalStatus
-            ? `var(${getConfidenceSpec(finalStatus).colorVar})`
-            : "var(--cs-accent-violet)";
-
-        return (
-          <div key={key} className="flex flex-col items-center">
-            <span
-              className="rounded-full flex-shrink-0"
-              style={{
-                width: dotSize,
-                height: dotSize,
-                background: state === "done" || state === "active" ? doneColor : "transparent",
-                border: state === "pending" ? "1px solid var(--cs-text-tertiary)" : undefined,
-                boxShadow: state === "active" ? `0 0 0 3px color-mix(in oklch, ${doneColor} 18%, transparent)` : undefined,
-              }}
-              aria-hidden="true"
-            />
-            {!isLast && (
-              <span
-                className="w-px flex-shrink-0"
-                style={{
-                  height: lineHeight,
-                  background:
-                    state === "done"
-                      ? "color-mix(in oklch, var(--cs-accent-violet) 35%, transparent)"
-                      : "oklch(1 0 0 / 0.08)",
-                }}
-                aria-hidden="true"
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** The horizontal mono label strip used beside/above the ribbon (RETRIEVE · EVIDENCE · REASON · VERIFY). */
-export function ReasoningRibbonLabels({
+export function ReasoningRibbon({
   stageStates,
+  stageMs,
   finalStatus,
+  cached,
+  orientation = "vertical",
   className,
 }: {
   stageStates: Record<RibbonStageKey, StageState>;
+  stageMs?: Partial<Record<RibbonStageKey, number>>;
   finalStatus?: VerificationStatus;
+  cached?: boolean;
+  orientation?: "vertical" | "horizontal";
   className?: string;
 }) {
+  const vertical = orientation === "vertical";
+  const done = RIBBON_STAGE_ORDER.filter((k) => stageStates[k] === "done" || stageStates[k] === "skipped").length;
   return (
-    <div className={cn("font-mono text-[9px] uppercase tracking-wider text-text-tertiary", className)}>
-      {RIBBON_STAGE_ORDER.map((key, i) => {
+    <ol
+      className={cn(
+        "relative m-0 list-none p-0 before:absolute before:bg-[linear-gradient(180deg,oklch(1_0_0/0.2),oklch(1_0_0/0.04))]",
+        vertical ? "flex flex-col gap-5 pt-1 before:bottom-3.5 before:left-[5px] before:top-3 before:w-px" : "flex flex-wrap gap-x-4 gap-y-2 before:left-1.5 before:right-1.5 before:top-1.5 before:h-px",
+        className,
+      )}
+      aria-label={`Reasoning pipeline: ${done} of 4 stages complete${finalStatus ? `, verification ${getConfidenceSpec(finalStatus).label}` : ""}`}
+    >
+      {RIBBON_STAGE_ORDER.map((key) => {
         const state = stageStates[key];
-        const isLast = i === RIBBON_STAGE_ORDER.length - 1;
-        const label =
-          isLast && state === "done" && finalStatus
-            ? getConfidenceSpec(finalStatus).label.toUpperCase()
-            : RIBBON_STAGE_LABELS[key].toUpperCase();
-        const color =
-          state === "active"
-            ? "var(--cs-accent-violet)"
-            : state === "done"
-              ? isLast && finalStatus
-                ? `var(${getConfidenceSpec(finalStatus).colorVar})`
-                : "var(--cs-text-secondary)"
-              : undefined;
+        const final = key === "verify" && state === "done" && finalStatus ? `var(${getConfidenceSpec(finalStatus).colorVar})` : null;
+        const ms = stageMs?.[key];
+        const sub = state === "skipped" ? "skipped" : cached ? (key === "verify" ? "cached" : null) : ms !== undefined && state === "done" ? `${ms.toLocaleString("en-US")}ms` : null;
         return (
-          <span key={key} style={color ? { color } : undefined}>
-            {i > 0 && <span className="mx-1 text-text-tertiary">&middot;</span>}
-            {label}
-          </span>
+          <li key={key} className="relative grid grid-cols-[11px_auto] items-start gap-[9px]">
+            <span
+              aria-hidden="true"
+              className={cn(
+                "mt-0.5 h-[11px] w-[11px] rounded-full border-[1.5px] border-border-strong bg-bg transition-all duration-standard ease-cs",
+                state === "active" && "cs-pulse border-violet bg-violet shadow-[0_0_0_4px_var(--cs-violet-tint),0_0_12px_oklch(0.75_0.13_300/0.55)]",
+                state === "done" && !final && "border-[oklch(0.78_0.01_280)] bg-[oklch(0.78_0.01_280)]",
+                state === "skipped" && "border-dashed bg-transparent",
+              )}
+              style={final ? { background: final, borderColor: final } : undefined}
+            />
+            <span
+              className={cn(
+                "font-mono text-[9.5px] font-medium uppercase leading-[1.3] tracking-[0.09em] text-text-tertiary transition-colors",
+                state === "active" && "text-violet",
+                (state === "done" || state === "skipped") && "text-text-secondary",
+              )}
+              style={final ? { color: final } : undefined}
+            >
+              {RIBBON_STAGE_LABELS[key]}
+              {sub && <span className="mt-0.5 block text-[10px] font-normal normal-case tracking-normal text-text-tertiary">{sub}</span>}
+            </span>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
-}
-
-function reasoningRibbonSummary(
-  stageStates: Record<RibbonStageKey, StageState>,
-  finalStatus?: VerificationStatus,
-): string {
-  const done = RIBBON_STAGE_ORDER.filter((k) => stageStates[k] === "done").length;
-  const suffix = finalStatus ? `, verification: ${getConfidenceSpec(finalStatus).label}` : "";
-  return `Reasoning pipeline: ${done} of ${RIBBON_STAGE_ORDER.length} stages complete${suffix}`;
 }

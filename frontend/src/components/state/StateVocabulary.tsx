@@ -1,36 +1,40 @@
 "use client";
 
-import { AlertTriangle, Inbox, RefreshCw, Search, WifiOff } from "lucide-react";
+import { AlertTriangle, Info, RefreshCw, Search, WifiOff } from "lucide-react";
 import type { ReactNode } from "react";
+import { TopologyMark } from "@/components/devices/TopologyMark";
 import { Button } from "@/components/ui/Button";
+import { ApiError } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 
 /**
- * The rest of the system/data-state vocabulary (Design System §9.2):
- * Empty, Error, Partial, Stale, Offline. Every status pairs an icon with a
- * text label — never color alone (§12).
+ * System-state vocabulary (Design System §9.2) — implemented once, reused
+ * everywhere data loads. Boxless by default: rules and whitespace compose
+ * the page; tinted notices are reserved for genuine state changes.
  */
 
 export function EmptyState({
   message,
   action,
   icon,
+  detail,
   className,
 }: {
   message: string;
   action?: { label: string; onClick: () => void };
   icon?: ReactNode;
+  detail?: ReactNode;
   className?: string;
 }) {
   return (
-    <div className={cn("cs-card flex flex-col items-center justify-center gap-2 p-8 text-center", className)}>
+    <div className={cn("flex flex-col items-start gap-3 py-8", className)}>
       <span className="text-text-tertiary" aria-hidden="true">
-        {icon ?? <Inbox size={20} strokeWidth={1.6} />}
+        {icon ?? <TopologyMark variant="mark" size={26} />}
       </span>
-      <span className="cs-mono-label normal-case tracking-normal">Empty</span>
-      <p className="text-small text-text-secondary">{message}</p>
+      <p className="cs-lede !text-[17px]">{message}</p>
+      {detail && <div className="text-small text-text-secondary">{detail}</div>}
       {action && (
-        <Button variant="primary" size="sm" onClick={action.onClick} className="mt-2">
+        <Button variant="primary" onClick={action.onClick} className="mt-1">
           {action.label}
         </Button>
       )}
@@ -38,37 +42,94 @@ export function EmptyState({
   );
 }
 
+export type NoticeTone = "info" | "warn" | "bad";
+
+export function Notice({
+  tone = "info",
+  title,
+  children,
+  actions,
+  className,
+  role,
+}: {
+  tone?: NoticeTone;
+  title?: ReactNode;
+  children?: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+  role?: "alert" | "status";
+}) {
+  const Icon = tone === "bad" ? AlertTriangle : tone === "warn" ? AlertTriangle : Info;
+  const color = tone === "bad" ? "text-danger" : tone === "warn" ? "text-warning" : "text-info";
+  return (
+    <div
+      className={cn("cs-notice", tone === "bad" ? "cs-notice-bad" : tone === "warn" ? "cs-notice-warn" : "cs-notice-info", className)}
+      role={role ?? (tone === "bad" ? "alert" : "status")}
+    >
+      <Icon size={16} strokeWidth={1.6} className={cn("mt-0.5 flex-none", color)} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        {title && <b>{title}</b>}
+        {children && <div className={cn(title && "mt-0.5", "text-text-secondary")}>{children}</div>}
+        {actions && <div className="mt-2.5 flex flex-wrap gap-2">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Error panel: a human headline, the backend's own message, and a Retry action. */
 export function ErrorPanel({
   message,
+  error,
   onRetry,
+  title,
   className,
 }: {
-  message: string;
+  message?: string;
+  error?: unknown;
   onRetry?: () => void;
+  title?: string;
   className?: string;
 }) {
+  const api = error instanceof ApiError ? error : null;
+  const headline =
+    title ??
+    (api?.kind === "network"
+      ? "Can't reach the CodeSage backend"
+      : api?.kind === "timeout"
+        ? "The request timed out"
+        : api?.status === 409
+          ? "Not ready yet"
+          : "The request failed");
+  const detail = message ?? (error instanceof Error ? error.message : undefined);
   return (
-    <div className={cn("cs-card border-danger/35 p-4", className)} role="alert">
-      <div className="mb-2 flex items-center gap-1.5">
-        <AlertTriangle size={13} className="text-danger" aria-hidden="true" />
-        <span className="cs-mono-label text-danger">Error</span>
-      </div>
-      <p className="text-small text-text-primary/90">{message}</p>
-      {onRetry && (
-        <button onClick={onRetry} className="mt-2 font-mono text-[10px] text-danger hover:underline">
-          Retry &rarr;
-        </button>
+    <Notice
+      tone="bad"
+      title={headline}
+      className={className}
+      actions={
+        onRetry && (
+          <Button size="sm" variant="secondary" onClick={onRetry}>
+            <RefreshCw size={13} aria-hidden="true" />
+            Retry
+          </Button>
+        )
+      }
+    >
+      {detail && (
+        <div className="cs-errmono">
+          {api?.status ? `HTTP ${api.status} · ` : ""}
+          {detail}
+        </div>
       )}
-    </div>
+    </Notice>
   );
 }
 
 export function PartialNotice({ message, className }: { message: string; className?: string }) {
   return (
-    <div className={cn("flex items-center gap-1.5 font-mono text-[10.5px] text-warning", className)} role="status">
-      <AlertTriangle size={11} aria-hidden="true" />
+    <Notice tone="info" className={className}>
       {message}
-    </div>
+    </Notice>
   );
 }
 
@@ -84,41 +145,51 @@ export function StaleBanner({
   className?: string;
 }) {
   return (
-    <div className={cn("flex items-center gap-3 font-mono text-[10.5px] text-warning", className)} role="status">
-      <span className="flex items-center gap-1.5">
-        <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden="true" />
-        {message}
-      </span>
-      {onRegenerate && (
-        <button onClick={onRegenerate} disabled={regenerating} className="inline-flex items-center gap-1 hover:underline disabled:opacity-50">
-          <RefreshCw size={10} className={regenerating ? "animate-spin" : undefined} aria-hidden="true" />
-          Regenerate
-        </button>
-      )}
-    </div>
+    <Notice
+      tone="warn"
+      title="Re-indexed since generation"
+      className={className}
+      actions={
+        onRegenerate && (
+          <Button size="sm" variant="secondary" onClick={onRegenerate} loading={regenerating}>
+            {!regenerating && <RefreshCw size={13} aria-hidden="true" />}
+            Regenerate
+          </Button>
+        )
+      }
+    >
+      {message}
+    </Notice>
   );
 }
 
-export function OfflineBanner({ onRetry }: { onRetry: () => void }) {
+export function OfflineBanner({ onRetry, retryInSeconds }: { onRetry: () => void; retryInSeconds?: number }) {
   return (
     <div
-      className="flex items-center justify-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2 font-mono text-[11px] text-danger"
+      className="flex flex-wrap items-center justify-center gap-x-3.5 gap-y-1 border-b border-danger/30 bg-danger/10 px-5 py-2 text-[13px]"
       role="alert"
     >
-      <WifiOff size={13} aria-hidden="true" />
-      Couldn&rsquo;t reach the CodeSage backend.
-      <button onClick={onRetry} className="underline hover:no-underline">
-        Retry
-      </button>
+      <WifiOff size={15} className="text-danger" aria-hidden="true" />
+      <span>
+        <b className="font-semibold">Can&rsquo;t reach the CodeSage backend</b>
+        <span className="text-text-secondary">
+          {" "}
+          — GET /health failed{retryInSeconds !== undefined ? `. Retrying in ${retryInSeconds}s` : ""}.
+        </span>
+      </span>
+      <Button size="sm" variant="secondary" onClick={onRetry}>
+        Retry now
+      </Button>
     </div>
   );
 }
 
-export function NoResultsState({ query, className }: { query: string; className?: string }) {
+export function NoResultsState({ query, hint, className }: { query: string; hint?: ReactNode; className?: string }) {
   return (
-    <div className={cn("flex flex-col items-center gap-2 py-16 text-center", className)}>
-      <Search size={20} strokeWidth={1.6} className="text-text-tertiary" aria-hidden="true" />
-      <p className="text-small text-text-secondary">No results for &ldquo;{query}&rdquo;.</p>
+    <div className={cn("flex flex-col items-start gap-2 py-10", className)}>
+      <Search size={18} strokeWidth={1.6} className="text-text-tertiary" aria-hidden="true" />
+      <p className="cs-lede !text-[18px]">No matching results for &ldquo;{query}&rdquo;.</p>
+      {hint && <div className="max-w-[62ch] text-small text-text-secondary">{hint}</div>}
     </div>
   );
 }

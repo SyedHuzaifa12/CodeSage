@@ -1,146 +1,194 @@
 "use client";
 
 import "@xyflow/react/dist/style.css";
-import { useMemo, useRef } from "react";
-import {
-  Background,
-  Controls,
-  MiniMap,
-  ReactFlow,
-  type Edge,
-  type Node,
-} from "@xyflow/react";
-import { CsGraphNode, type CsGraphNodeData } from "@/components/graph/GraphNode";
-import { computeRadialLayout } from "@/lib/radialLayout";
-import type { GraphEdge } from "@/lib/types/workspace";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Background, Controls, MarkerType, MiniMap, ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { CsGraphEdge, CsGraphNode, NODE_WIDTH, type CsGraphEdgeData, type CsGraphNodeData } from "@/components/graph/GraphNode";
+import { forceLayout, nodeRadius } from "@/lib/forceLayout";
+import { edgeKey, neighborsOf, nodeLabel, sharedPrefixDepth, type GraphModel } from "@/lib/graphModel";
 
 const nodeTypes = { cs: CsGraphNode };
-
-interface GraphCanvasProps {
-  nodes: string[];
-  edges: GraphEdge[];
-  hotspotFiles: Set<string>;
-  focusedNode: string | null;
-  onNodeClick: (id: string) => void;
-}
+const edgeTypes = { cs: CsGraphEdge };
+const W = 1200;
+const H = 860;
 
 /**
- * The interactive Graph canvas (Design System §17/D): real pan/zoom
- * (@xyflow/react), centrality-sized nodes, a functional minimap, and
- * arrow-key neighbor navigation once a node has focus (§12) — not static
- * chrome, per the design doc's own explicit warning that an unwired
- * minimap/focus-vignette "would read as broken rather than premium."
+ * Interactive knowledge map (React Flow). Positions come from the
+ * deterministic force layout over the capped model; selection, hover
+ * neighbourhood highlighting and arrow-key neighbour navigation are all
+ * driven from here.
  */
-export function GraphCanvas({ nodes, edges, hotspotFiles, focusedNode, onNodeClick }: GraphCanvasProps) {
-  const layout = useMemo(() => computeRadialLayout(nodes, edges, nodes.length), [nodes, edges]);
-  const positionById = useRef(new Map<string, { x: number; y: number }>());
-  const adjacency = useRef(new Map<string, string[]>());
+export function GraphCanvas({
+  model,
+  mode,
+  hotspots,
+  orphans,
+  cycleKeys,
+  selected,
+  onSelect,
+  layoutKey,
+}: {
+  model: GraphModel;
+  mode: "dependency" | "call";
+  hotspots: Set<string>;
+  orphans: Set<string>;
+  cycleKeys: Set<string>;
+  selected: string | null;
+  onSelect: (id: string | null) => void;
+  layoutKey: string;
+}) {
+  const [hover, setHover] = useState<string | null>(null);
+  const flow = useRef<ReactFlowInstance | null>(null);
+  const positions = useMemo(() => forceLayout(model.nodes, model.edges, { width: W, height: H, iterations: 420, key: layoutKey }), [model, layoutKey]);
+  const pos = useMemo(() => new Map(model.nodes.map((n, i) => [n, positions[i]])), [model.nodes, positions]);
+  const maxDegree = Math.max(1, ...model.nodes.map((n) => model.degree.get(n) ?? 0));
+  const radius = useCallback((n: string) => nodeRadius(model.degree.get(n) ?? 0, maxDegree), [model, maxDegree]);
+  const prefixDepth = useMemo(() => sharedPrefixDepth(model.nodes), [model.nodes]);
+  const focus = hover ?? selected;
+  const near = useMemo(() => (focus ? neighborsOf(model.edges, focus) : null), [focus, model.edges]);
+  const activate = useCallback((id: string) => onSelect(id === selected ? null : id), [onSelect, selected]);
 
-  const { flowNodes, flowEdges } = useMemo(() => {
-    const maxDegree = Math.max(1, ...layout.nodes.map((n) => n.degree));
-    positionById.current = new Map(layout.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+  const nodes: Node<CsGraphNodeData>[] = useMemo(
+    () =>
+      model.nodes.map((n) => {
+        const p = pos.get(n)!;
+        const r = radius(n);
+        return {
+          id: n,
+          type: "cs",
+          position: { x: p.x - NODE_WIDTH / 2, y: p.y - r - 10 },
+          width: NODE_WIDTH,
+          height: r * 2 + 34,
+          draggable: false,
+          selectable: false,
+          focusable: false,
+          data: {
+            id: n,
+            label: nodeLabel(n, mode, prefixDepth),
+            radius: r,
+            inDegree: model.inDegree.get(n) ?? 0,
+            outDegree: model.outDegree.get(n) ?? 0,
+            hotspot: mode === "dependency" && hotspots.has(n),
+            orphan: mode === "dependency" && orphans.has(n),
+            selected: n === selected,
+            dim: Boolean(focus && n !== focus && !near?.has(n)),
+            hub: (model.degree.get(n) ?? 0) >= maxDegree * 0.45,
+            onActivate: activate,
+            onHover: setHover,
+          },
+        };
+      }),
+    [model, pos, radius, mode, prefixDepth, hotspots, orphans, selected, focus, near, maxDegree, activate],
+  );
 
-    const adj = new Map<string, string[]>();
-    for (const n of layout.nodes) adj.set(n.id, []);
-    for (const e of layout.edges) {
-      adj.get(e.source)?.push(e.target);
-      adj.get(e.target)?.push(e.source);
-    }
-    adjacency.current = adj;
-
-    const fNodes: Node<CsGraphNodeData>[] = layout.nodes.map((n) => {
-      const ratio = maxDegree > 0 ? n.degree / maxDegree : 0;
-      // Explicit width/height (matching CsGraphNode's actual rendered size)
-      // rather than relying purely on React Flow's async ResizeObserver
-      // measurement — the MiniMap needs concrete dimensions immediately to
-      // draw each node's shape; without this it silently renders nothing.
-      const nodeWidth = 10 + ratio * 22 + 60;
-      const nodeHeight = 46;
+  const edges: Edge<CsGraphEdgeData>[] = useMemo(() => {
+    const keys = new Set(model.edges.map(edgeKey));
+    return model.edges.map((e) => {
+      const cycle = mode === "dependency" && cycleKeys.has(edgeKey(e));
+      const active = Boolean(focus && (e.source === focus || e.target === focus));
+      const color = cycle ? "var(--cs-danger)" : active ? "var(--cs-accent-violet)" : "oklch(1 0 0 / 0.32)";
       return {
-        id: n.id,
+        id: edgeKey(e),
+        source: e.source,
+        target: e.target,
         type: "cs",
-        position: { x: n.x, y: n.y },
-        width: nodeWidth,
-        height: nodeHeight,
+        focusable: false,
+        selectable: false,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
         data: {
-          label: n.id.length > 28 ? `…${n.id.slice(-26)}` : n.id,
-          degree: n.degree,
-          maxDegree,
-          isHotspot: hotspotFiles.has(n.id),
-          focused: n.id === focusedNode,
+          sourceRadius: radius(e.source),
+          targetRadius: radius(e.target),
+          cycle,
+          active,
+          dim: Boolean(focus && !active),
+          bend: keys.has(`${e.target}→${e.source}`) ? 26 : 0,
         },
       };
     });
+  }, [model.edges, mode, cycleKeys, focus, radius]);
 
-    const fEdges: Edge[] = layout.edges.map((e, i) => ({
-      id: `e-${i}`,
-      source: e.source,
-      target: e.target,
-      style: { stroke: "oklch(0.4 0.02 280)", strokeWidth: 1.4 },
-      animated: false,
-    }));
+  // Frame the selected node together with its direct neighbours, so the
+  // relationships the inspector lists are on screen (sparse graphs would
+  // otherwise push them out of view at a fixed zoom).
+  const frame = useCallback(
+    (inst: ReactFlowInstance, node: string, duration: number) => {
+      const ids = [node, ...neighborsOf(model.edges, node)].map((id) => ({ id }));
+      inst.fitView({ nodes: ids, padding: 0.35, maxZoom: 1.2, duration });
+    },
+    [model.edges],
+  );
+  useEffect(() => {
+    if (!selected || !flow.current || !pos.has(selected)) return;
+    frame(flow.current, selected, 280);
+  }, [selected, pos, frame]);
 
-    return { flowNodes: fNodes, flowEdges: fEdges };
-  }, [layout, hotspotFiles, focusedNode]);
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
-    const target = e.target as HTMLElement;
-    const wrapper = target.closest(".react-flow__node") as HTMLElement | null;
-    const currentId = wrapper?.getAttribute("data-id");
-    if (!currentId) return;
-
-    const pos = positionById.current.get(currentId);
-    const neighbors = adjacency.current.get(currentId) ?? [];
-    if (!pos || neighbors.length === 0) return;
-
-    const dir: Record<string, [number, number]> = {
-      ArrowUp: [0, -1],
-      ArrowDown: [0, 1],
-      ArrowLeft: [-1, 0],
-      ArrowRight: [1, 0],
-    };
-    const [dx, dy] = dir[e.key];
-
-    let best: { id: string; score: number } | null = null;
-    for (const nId of neighbors) {
-      const nPos = positionById.current.get(nId);
-      if (!nPos) continue;
-      const vx = nPos.x - pos.x;
-      const vy = nPos.y - pos.y;
-      const len = Math.hypot(vx, vy) || 1;
-      const score = (vx / len) * dx + (vy / len) * dy;
-      if (score > 0 && (!best || score > best.score)) best = { id: nId, score };
+  function onKeyDown(e: React.KeyboardEvent) {
+    const dir: Record<string, [number, number]> = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+    if (e.key === "Escape") {
+      onSelect(null);
+      return;
     }
-
+    const v = dir[e.key];
+    if (!v) return;
+    const current = (e.target as HTMLElement).closest<HTMLElement>("[data-graph-node]")?.dataset.graphNode;
+    if (!current) return;
+    e.preventDefault();
+    const a = pos.get(current)!;
+    const candidates = [...(neighborsOf(model.edges, current).size ? neighborsOf(model.edges, current) : new Set(model.nodes.filter((n) => n !== current)))];
+    let best: string | null = null;
+    let bestScore = Infinity;
+    for (const c of candidates) {
+      const b = pos.get(c)!;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const along = dx * v[0] + dy * v[1];
+      if (along <= 0) continue;
+      const score = along + Math.abs(dx * v[1] - dy * v[0]) * 2.2;
+      if (score < bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
     if (best) {
-      e.preventDefault();
-      const nextEl = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(best.id)}"] [role="button"]`);
-      nextEl?.focus();
-      onNodeClick(best.id);
+      document.querySelector<HTMLElement>(`[data-graph-node="${CSS.escape(best)}"]`)?.focus();
+      onSelect(best);
     }
   }
 
   return (
-    <div className="h-full w-full" onKeyDown={handleKeyDown}>
+    <div className="cs-graph-canvas relative h-full w-full" onKeyDown={onKeyDown}>
       <ReactFlow
-        nodes={flowNodes}
-        edges={flowEdges}
+        nodes={nodes}
+        edges={edges}
         nodeTypes={nodeTypes}
-        onNodeClick={(_e, node) => onNodeClick(node.id)}
+        edgeTypes={edgeTypes}
+        onInit={(inst) => {
+          flow.current = inst as unknown as ReactFlowInstance;
+          if (selected && pos.has(selected)) requestAnimationFrame(() => frame(inst as unknown as ReactFlowInstance, selected, 0));
+        }}
+        onNodeClick={(_e, node) => activate(node.id)}
+        onPaneClick={() => onSelect(null)}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={false}
+        nodesFocusable={false}
+        edgesFocusable={false}
         fitView
-        minZoom={0.2}
+        fitViewOptions={{ padding: 0.12 }}
+        minZoom={0.25}
         maxZoom={2.5}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="oklch(1 0 0 / 0.04)" gap={28} />
-        <Controls showInteractive={false} />
+        <Background color="oklch(1 0 0 / 0.055)" gap={24} size={1.2} />
+        <Controls showInteractive={false} position="bottom-left" />
         <MiniMap
           pannable
           zoomable
-          nodeColor={() => "oklch(0.55 0.05 280)"}
+          position="bottom-right"
+          nodeColor={(n) => ((n.data as CsGraphNodeData).hotspot ? "oklch(0.75 0.13 300)" : "oklch(1 0 0 / 0.45)")}
+          nodeStrokeWidth={0}
           maskColor="oklch(0.1 0.006 280 / 0.6)"
-          style={{ background: "oklch(0.1 0.006 280 / 0.6)" }}
+          style={{ background: "oklch(0.18 0.009 280 / 0.85)", width: 170, height: 120 }}
         />
       </ReactFlow>
     </div>

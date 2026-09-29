@@ -32,7 +32,9 @@ export function useCreateRepository() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (payload: RepositoryCreateRequest) => repositoriesApi.create(payload),
-    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.repositories() }),
+    // Always re-fetch: a failed clone (502) still persists a FAILED row, and
+    // a client-side timeout can leave a clone that later completes.
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.repositories() }),
   });
 }
 

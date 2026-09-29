@@ -1,110 +1,96 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { aiApi } from "@/lib/api/ai";
-import { ApiError } from "@/lib/api/client";
-import { createSyntheticAnswerStream } from "@/lib/answerStream";
-import type { RibbonStageKey } from "@/lib/reasoningRibbon";
-import { RIBBON_STAGE_ORDER } from "@/lib/reasoningRibbon";
-import type { StageState } from "@/components/devices/ReasoningRibbon";
-import type { AskOptions, AskResponseData, Citation, VerificationInfo } from "@/lib/types/ai";
+import { createSyntheticAnswerStream, type AnswerStream } from "@/lib/answerStream";
+import { askSession, type AskTurn } from "@/lib/askSession";
+import type { AskOptions } from "@/lib/types/ai";
 
-export interface AskTurn {
-  id: string;
-  question: string;
-  answerText: string;
-  citations: Citation[];
-  verification: VerificationInfo | null;
-  metadata: AskResponseData["metadata"] | null;
-  stageStates: Record<RibbonStageKey, StageState>;
-  status: "streaming" | "done" | "error";
-  errorMessage?: string;
+export type { AskTurn } from "@/lib/askSession";
+
+const activeStreams = new Map<string, AnswerStream>();
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
-const IDLE_STAGES: Record<RibbonStageKey, StageState> = {
-  retrieve: "pending",
-  evidence: "pending",
-  reason: "pending",
-  verify: "pending",
-};
-
 /**
- * Drives the Ask page's UI purely from the AnswerStream contract
- * (Design System §13) — this hook is the ONLY place that knows the
- * backend is synchronous today; every component consuming `turns` would
- * work unchanged against a real streaming adapter.
+ * Drives the Ask page purely from the AnswerStream contract (Design System
+ * §13). This hook is the ONLY place that knows the backend is synchronous
+ * today: `createSyntheticAnswerStream` reveals the complete `/ask` answer
+ * client-side, and a real SSE adapter can replace it without touching any
+ * component that renders `turns`.
  */
 export function useAskStream(repositoryId: string) {
-  const [turns, setTurns] = useState<AskTurn[]>([]);
-  const cancelRef = useRef<(() => void) | null>(null);
+  const turns = useSyncExternalStore(
+    askSession.subscribe,
+    () => askSession.get(repositoryId),
+    () => askSession.get(repositoryId),
+  );
 
   const ask = useCallback(
-    (question: string, options?: AskOptions) => {
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setTurns((prev) => [
-        ...prev,
-        {
-          id,
-          question,
-          answerText: "",
-          citations: [],
-          verification: null,
-          metadata: null,
-          stageStates: { ...IDLE_STAGES, retrieve: "active" },
-          status: "streaming",
-        },
-      ]);
+    (question: string, options?: AskOptions, replaceId?: string) => {
+      const id = replaceId ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const turn: AskTurn = {
+        id,
+        question,
+        stage: 0,
+        status: "thinking",
+        partial: "",
+        response: null,
+        error: null,
+        askedAt: Date.now(),
+      };
+      const current = askSession.get(repositoryId);
+      askSession.set(repositoryId, replaceId ? current.map((t) => (t.id === replaceId ? turn : t)) : [...current, turn]);
+      const update = (patch: Partial<AskTurn>) => askSession.update(repositoryId, id, patch);
 
-      const update = (patch: Partial<AskTurn>) =>
-        setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-
-      // Approximates stage progression for the ribbon while the single
-      // network call is in flight (retrieval -> evidence -> reasoning),
-      // then reconciles with real stage_latency_ms once the response lands.
-      const progressTimers = [
-        setTimeout(() => update({ stageStates: { ...IDLE_STAGES, retrieve: "done", evidence: "active" } }), 350),
-        setTimeout(() => update({ stageStates: { ...IDLE_STAGES, retrieve: "done", evidence: "done", reason: "active" } }), 900),
+      // Client-paced stage progression while the single request is in
+      // flight (retrieve -> evidence -> reason); real per-stage timings
+      // replace this the moment the response lands.
+      const timers = [
+        setTimeout(() => update({ stage: 1 }), 350),
+        setTimeout(() => update({ stage: 2 }), 900),
       ];
-
+      const reduced = prefersReducedMotion();
       const stream = createSyntheticAnswerStream(
         () => aiApi.ask(repositoryId, question, options),
         {
-          onToken: (_tok, fullText) => update({ answerText: fullText }),
-          onCitations: (citations) => update({ citations }),
-          onVerification: (verification) =>
-            update({
-              verification,
-              stageStates: { retrieve: "done", evidence: "done", reason: "done", verify: "active" },
-            }),
+          onVerification: () => {
+            timers.forEach(clearTimeout);
+            update({ stage: 3, status: "revealing" });
+          },
+          onToken: (_tok, soFar) => update({ partial: soFar }),
           onDone: (full) => {
-            progressTimers.forEach(clearTimeout);
-            update({
-              status: "done",
-              metadata: full.metadata,
-              stageStates: { retrieve: "done", evidence: "done", reason: "done", verify: "done" },
-            });
+            activeStreams.delete(id);
+            update({ status: "done", stage: 4, response: full, partial: full.answer });
           },
           onError: (err) => {
-            progressTimers.forEach(clearTimeout);
-            update({
-              status: "error",
-              errorMessage: err instanceof ApiError ? err.message : "Something went wrong answering this question.",
-            });
+            timers.forEach(clearTimeout);
+            activeStreams.delete(id);
+            update({ status: "error", error: err });
           },
         },
+        { msPerToken: reduced ? 0 : 16, wordsPerToken: 2 },
       );
-
-      cancelRef.current = stream.cancel;
+      activeStreams.set(id, stream);
       void stream.start();
+      return id;
     },
     [repositoryId],
   );
 
-  const cancel = useCallback(() => {
-    cancelRef.current?.();
-  }, []);
+  const cancel = useCallback((id: string) => {
+    activeStreams.get(id)?.cancel();
+    activeStreams.delete(id);
+    askSession.update(repositoryId, id, { status: "error", error: new Error("Cancelled.") });
+  }, [repositoryId]);
 
-  return { turns, ask, cancel };
+  const clear = useCallback(() => {
+    activeStreams.forEach((s) => s.cancel());
+    activeStreams.clear();
+    askSession.clear(repositoryId);
+  }, [repositoryId]);
+
+  return { turns, ask, cancel, clear };
 }
-
-export { RIBBON_STAGE_ORDER };
