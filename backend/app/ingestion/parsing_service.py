@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -158,21 +159,36 @@ async def run_parsing_pipeline(repository_id: uuid.UUID) -> None:
         repository_id: The repository to parse.
     """
     session_factory = get_session_factory()
+    pipeline_started = time.perf_counter()
     async with session_factory() as session:
         try:
             service = ParsingService(session)
+            parse_started = time.perf_counter()
             await service.parse_repository(repository_id)
+            parse_ms = int((time.perf_counter() - parse_started) * 1000)
 
             # Sequential, same session/background task — no new deadlock
             # risk (see WorkspaceService.request_indexing's commit-before-
             # background-task note for the failure mode this avoids).
             intelligence_service = RepositoryIntelligenceService(session)
+            intelligence_started = time.perf_counter()
             await intelligence_service.analyze_repository(repository_id)
+            intelligence_ms = int((time.perf_counter() - intelligence_started) * 1000)
 
             knowledge_service = KnowledgeService(session)
+            knowledge_started = time.perf_counter()
             await knowledge_service.index_repository(repository_id)
+            knowledge_ms = int((time.perf_counter() - knowledge_started) * 1000)
 
             await session.commit()
+
+            total_ms = int((time.perf_counter() - pipeline_started) * 1000)
+            logger.info(
+                "STAGE_TIMING repository=%s parse_ms=%d intelligence_ms=%d knowledge_ms=%d total_ms=%d "
+                "(see the preceding 'Knowledge index ... transitioned to READY' log line for the "
+                "chunking_ms/embedding_ms/upsert_ms breakdown within knowledge_ms)",
+                repository_id, parse_ms, intelligence_ms, knowledge_ms, total_ms,
+            )
         except Exception:
             await session.rollback()
             logger.exception("Parsing pipeline crashed for repository %s", repository_id)
