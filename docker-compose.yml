@@ -111,6 +111,50 @@ services:
     networks:
       - codesage-network
 
+  celery-worker:
+    # ADR-026: Celery-backed indexing. Same image/context/env as
+    # `backend` (indexing needs the identical app code, Tree-sitter
+    # parsers, and FastEmbed/ONNX runtime the API process uses) — only
+    # the command differs. A separate `build:` block here is
+    # intentional, not wasteful: Docker shares identical layers across
+    # both services' images at the storage level, so this costs no
+    # meaningful extra disk beyond a second thin image manifest.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: codesage-celery-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      QDRANT_HOST: qdrant
+    command:
+      - celery
+      - -A
+      - app.core.celery_app:celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=${CELERY_WORKER_CONCURRENCY:-4}
+      - -Q
+      - indexing
+    volumes:
+      # Same two volumes as `backend` — the worker clones/reads/writes
+      # the exact same on-disk repository data and embedding model
+      # cache, not a separate copy.
+      - repository_storage:/app/data/repositories
+      - embedding_cache:/app/data/embedding_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - codesage-network
+
 networks:
   codesage-network:
     driver: bridge

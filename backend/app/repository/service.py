@@ -97,8 +97,10 @@ class RepositoryService:
         logger.info("Repository %s transitioned to READY (clone_ms=%d)", repository.id, clone_ms)
 
         scan_started = time.perf_counter()
+        excluded_count = 0
         try:
-            await self._workspace_service.scan_repository(repository.id)
+            workspace = await self._workspace_service.scan_repository(repository.id)
+            excluded_count = workspace.excluded_files_count
         except Exception as exc:
             # A failed initial scan must not fail the clone itself — the
             # repository is genuinely ready; the workspace independently
@@ -106,7 +108,8 @@ class RepositoryService:
             logger.error("Initial workspace scan failed for repository %s: %s", repository.id, exc)
         scan_ms = int((time.perf_counter() - scan_started) * 1000)
         logger.info(
-            "STAGE_TIMING repository=%s clone_ms=%d scan_ms=%d", repository.id, clone_ms, scan_ms
+            "STAGE_TIMING repository=%s clone_ms=%d scan_ms=%d excluded_files=%d",
+            repository.id, clone_ms, scan_ms, excluded_count,
         )
 
         return repository

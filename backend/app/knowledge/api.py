@@ -12,13 +12,12 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import get_db
 from app.knowledge import repository as knowledge_db
 from app.knowledge.exceptions import RepositoryNotIndexedError
-from app.knowledge.pipeline import run_knowledge_indexing_pipeline
 from app.knowledge.schemas import (
     ChunkListData,
     ChunkResponse,
@@ -105,24 +104,30 @@ async def list_chunks(
 
 @router.post("/reindex", response_model=SuccessResponse[KnowledgeReindexResponse])
 async def trigger_reindex(
-    repository_id: uuid.UUID, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_db)
+    repository_id: uuid.UUID, session: AsyncSession = Depends(get_db)
 ) -> SuccessResponse[KnowledgeReindexResponse]:
-    """Manually re-run knowledge indexing for a repository in the background.
+    """Manually re-run knowledge indexing for a repository as a Celery task (ADR-026).
 
     Idempotent: unchanged files are skipped via the content-hash fast
     path, so re-running this on an already-indexed repository with no
-    source changes does effectively no embedding/Qdrant work.
+    source changes does effectively no embedding/Qdrant work. Shares the
+    same per-repository Redis lock as the full index task
+    (``run_indexing_task``), so a knowledge-only reindex can never race
+    against a concurrent full index of the same repository.
 
     Args:
         repository_id: The repository's UUID.
-        background_tasks: FastAPI's background-task registrar.
         session: Injected database session.
 
     Returns:
         An acknowledgement payload — indexing has started, not finished.
     """
     await _require_repository(session, repository_id)
-    background_tasks.add_task(run_knowledge_indexing_pipeline, repository_id)
+    # Imported locally — see the matching comment in
+    # ``ingestion/service.py::request_indexing`` for why.
+    from app.ingestion.tasks import run_knowledge_reindex_task
+
+    run_knowledge_reindex_task.delay(str(repository_id))
     data = KnowledgeReindexResponse(
         repository_id=repository_id,
         message="Knowledge re-indexing started in the background. Poll GET .../knowledge for progress.",

@@ -24,6 +24,9 @@ class WorkspaceResponse(BaseModel):
     folder_count: int
     repository_size_bytes: int
     language_distribution: dict[str, int]
+    excluded_files_count: int
+    excluded_by_reason: dict[str, int]
+    excluded_samples: list[dict]
     created_at: datetime
     updated_at: datetime
 
@@ -55,6 +58,13 @@ class IndexTriggerResponse(BaseModel):
     repository_id: uuid.UUID
     workspace_status: str
     message: str
+
+
+class IndexCancelResponse(BaseModel):
+    """Payload shape for ``POST /repositories/{id}/index/cancel`` (ADR-026)."""
+
+    repository_id: uuid.UUID
+    indexing_status: str
 
 
 class IntelligenceResponse(BaseModel):

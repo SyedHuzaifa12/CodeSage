@@ -31,3 +31,8 @@ async def run_knowledge_indexing_pipeline(repository_id: uuid.UUID) -> None:
         except Exception:
             await session.rollback()
             logger.exception("Knowledge indexing pipeline crashed for repository %s", repository_id)
+            # Re-raised so a Celery-dispatched caller can retry the whole
+            # task (ADR-026) — see the matching comment in
+            # ``ingestion/parsing_service.py::run_parsing_pipeline`` for
+            # why this is safe for the pre-existing BackgroundTask caller too.
+            raise

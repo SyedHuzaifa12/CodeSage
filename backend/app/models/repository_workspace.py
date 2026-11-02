@@ -48,5 +48,13 @@ class RepositoryWorkspace(Base, TimestampMixin):
     folder_count: Mapped[int] = mapped_column(nullable=False, default=0)
     repository_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     language_distribution: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # Noise filtered out by the scanner before ever becoming a `File` row
+    # (dependency dirs, build output, lockfiles, .gitignore matches,
+    # oversized files) — see `ingestion/utils.py::scan_directory`.
+    # Inspectable rather than silent: a reason breakdown plus a capped
+    # sample of excluded paths, surfaced via `GET /repositories/{id}/workspace`.
+    excluded_files_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    excluded_by_reason: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    excluded_samples: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
     repository: Mapped["Repository"] = relationship(back_populates="workspace")

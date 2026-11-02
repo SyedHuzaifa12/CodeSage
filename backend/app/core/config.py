@@ -92,6 +92,52 @@ class RedisSettings(BaseSettings):
     redis_password: Optional[SecretStr] = None
 
 
+class CelerySettings(BaseSettings):
+    """Celery broker/backend/worker configuration (ADR-026).
+
+    Reuses the existing Redis instance (``RedisSettings``) as both
+    broker and result backend, per the project's "no unnecessary
+    infrastructure" principle — but deliberately on its **own logical
+    Redis DB index** (``celery_redis_db``, default ``1``), never
+    ``RedisSettings.redis_db`` (default ``0``, used for the embedding/
+    AI/retrieval/reports caches). Broker traffic and cache traffic are
+    different workloads with different eviction/durability expectations
+    (a lost cache entry is a cheap recompute; a lost broker message is a
+    dropped indexing job) — a separate DB index keeps them from ever
+    contending over Redis's single keyspace/eviction policy, at zero
+    extra infrastructure cost (still one Redis process).
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    celery_redis_db: int = 1
+    # Caps concurrent indexing jobs across *independent repositories* —
+    # the cross-repository bounded concurrency this pass is required to
+    # provide. Passed to the worker as ``--concurrency`` at startup
+    # (bare-metal command / Docker service), not read directly by the
+    # app, but kept here as the single documented source of truth for
+    # the default so both run paths agree with each other without
+    # hand-copying a number in two places.
+    celery_worker_concurrency: int = 4
+    # A single indexing task runs the whole clone-already-done pipeline
+    # (parse -> intelligence -> knowledge) sequentially, same as the
+    # pre-Celery BackgroundTask did — "concurrency within a stage" (e.g.
+    # parallel Tree-sitter parsing across files of the *same* repository)
+    # is a separate, not-yet-made change (see ADR-026's Consequences);
+    # this setting only bounds how many *whole-repository* tasks a given
+    # worker process runs at once.
+    celery_task_time_limit_seconds: int = 1800  # hard kill switch for a runaway task (30 min)
+    celery_task_soft_time_limit_seconds: int = 1700
+    celery_max_retries: int = 2
+    celery_retry_backoff_seconds: int = 10
+    # TTL for the Redis lock that enforces "only one indexing task per
+    # repository at a time" across concurrent workers (not just within
+    # one process) — see ADR-026. Set comfortably above
+    # ``celery_task_time_limit_seconds`` so a legitimately long-running
+    # task is never undercut by its own lock expiring.
+    indexing_lock_ttl_seconds: int = 2400
+
+
 class QdrantSettings(BaseSettings):
     """Qdrant connection parameters."""
 
@@ -139,6 +185,13 @@ class LLMSettings(BaseSettings):
     embedding_batch_size: int = 32
     embedding_cache_ttl_seconds: int = 2_592_000  # 30 days — Redis is a pure perf cache, never the source of truth
     embedding_model_cache_dir: str = "data/embedding_cache"
+    # How many files' chunks are pooled into one embed()/Qdrant-upsert
+    # call during knowledge indexing (Sprint-N pipeline-optimization
+    # pass). Larger batches amortize the fixed per-call overhead of the
+    # embedding model and the Qdrant round-trip across many files instead
+    # of paying it once per file; bounded so memory stays predictable on
+    # the 16GB-RAM consumer-laptop target (ADR-012).
+    knowledge_file_batch_size: int = 25
 
     @property
     def embedding_version(self) -> str:
@@ -315,6 +368,53 @@ class ReportSettings(BaseSettings):
     cache_ttl_seconds: int = 3600  # 1 hour — a full report is more expensive to recompute than a single AI answer
 
 
+class IngestionSettings(BaseSettings):
+    """File-walk/noise-filtering configuration for the Ingestion module's scanner.
+
+    Kept separate from ``AppSettings`` because these knobs are specific
+    to one concern (what the scanner excludes and why) and are tuned
+    independently of general app/web settings.
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    # Extra directory names to prune, beyond the built-in language/VCS/
+    # tooling defaults in ``ingestion/utils.py`` (comma-separated).
+    ingestion_extra_ignored_dirs: str = ""
+    # Extra exact filenames to exclude (comma-separated) — for
+    # project-specific generated files not already covered by the
+    # built-in lockfile/minified-bundle list.
+    ingestion_extra_ignored_filenames: str = ""
+    # Extra filename suffixes to exclude (comma-separated, e.g. ".min.js").
+    ingestion_extra_ignored_suffixes: str = ""
+    # A cloned repository's own ``.gitignore`` is a strong, repo-specific
+    # noise signal (its maintainers already decided what doesn't belong
+    # in version control) — respected by default, but can be disabled
+    # for repositories with unusual/overly broad ignore rules.
+    ingestion_respect_gitignore: bool = True
+    # Files larger than this are excluded from the scan entirely (never
+    # even recorded as a ``File`` row) — catches large binaries/data
+    # files/generated artifacts that aren't on any named-pattern list.
+    # Separate from (and larger than) Knowledge's embedding-specific cap,
+    # since a large file can still be worth recording as metadata.
+    ingestion_max_file_size_bytes: int = 5_000_000
+
+    @property
+    def extra_ignored_dirs_list(self) -> list[str]:
+        """Parsed, comma-separated extra ignored-directory names."""
+        return _split_csv(self.ingestion_extra_ignored_dirs)
+
+    @property
+    def extra_ignored_filenames_list(self) -> list[str]:
+        """Parsed, comma-separated extra ignored-filename list."""
+        return _split_csv(self.ingestion_extra_ignored_filenames)
+
+    @property
+    def extra_ignored_suffixes_list(self) -> list[str]:
+        """Parsed, comma-separated extra ignored-suffix list."""
+        return _split_csv(self.ingestion_extra_ignored_suffixes)
+
+
 class Settings:
     """Aggregates every settings group behind a single access point."""
 
@@ -328,6 +428,8 @@ class Settings:
         self.retrieval = RetrievalSettings()
         self.ai = AISettings()
         self.reports = ReportSettings()
+        self.ingestion = IngestionSettings()
+        self.celery = CelerySettings()
 
 
 @lru_cache
