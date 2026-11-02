@@ -46,6 +46,46 @@ from app.repository import repository as repository_db
 
 logger = logging.getLogger("codesage.knowledge.service")
 
+# Auto-generated/vendor files with zero semantic value for code search or
+# Ask — and a real operational risk: lockfiles in particular are often
+# enormous single-blob JSON/YAML with no top-level symbols, so they fall
+# through to the generic fixed-size fallback chunker (chunking.py) with no
+# size cap, which can hand the embedding model (ONNX, fixed memory budget)
+# a chunk large enough to exhaust available memory outright (observed
+# live: a ~384MB single-allocation failure embedding `package-lock.json`).
+# Excluding them here is both a quality fix (nobody asks Ask/Search about
+# a lockfile's contents) and a reliability fix (removes a real crash/
+# multi-minute-stall vector from the indexing pipeline).
+_EXCLUDED_KNOWLEDGE_FILENAMES = frozenset(
+    {
+        "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+        "composer.lock", "Gemfile.lock", "poetry.lock", "Pipfile.lock",
+        "go.sum", "Cargo.lock", "mix.lock",
+    }
+)
+_EXCLUDED_KNOWLEDGE_SUFFIXES = (".min.js", ".min.css", ".map")
+
+# Second line of defense: any file this large (bytes) is skipped regardless
+# of name — catches generated/vendor/data files not on the exclusion list
+# above, so a single unanticipated huge file can never again reproduce the
+# ONNX out-of-memory failure that an unbounded fallback-chunk triggered.
+_MAX_FILE_SIZE_FOR_EMBEDDING_BYTES = 512_000
+
+
+def _is_excluded_from_knowledge_indexing(path: str) -> bool:
+    """Whether a file is a known generated/vendor artifact, never embedded.
+
+    Args:
+        path: The file's repository-relative path.
+
+    Returns:
+        True if this file should be skipped entirely by knowledge indexing.
+    """
+    filename = Path(path).name
+    if filename in _EXCLUDED_KNOWLEDGE_FILENAMES:
+        return True
+    return filename.endswith(_EXCLUDED_KNOWLEDGE_SUFFIXES)
+
 
 class KnowledgeService:
     """Chunks, embeds, and persists a repository's indexable source files."""
@@ -111,7 +151,7 @@ class KnowledgeService:
 
             total_files = len(files)
             for index, file_row in enumerate(files, start=1):
-                if not file_row.language:
+                if not file_row.language or _is_excluded_from_knowledge_indexing(file_row.path):
                     continue
                 files_considered += 1
 
@@ -191,6 +231,12 @@ class KnowledgeService:
         """
         absolute_path = Path(repository.local_path) / file_row.path
         source_bytes = absolute_path.read_bytes()
+        if len(source_bytes) > _MAX_FILE_SIZE_FOR_EMBEDDING_BYTES:
+            logger.warning(
+                "Skipping knowledge indexing for '%s': %d bytes exceeds the %d-byte embedding size cap",
+                file_row.path, len(source_bytes), _MAX_FILE_SIZE_FOR_EMBEDDING_BYTES,
+            )
+            return None
         file_hash = hashlib.sha256(source_bytes).hexdigest()
 
         if await knowledge_db.is_file_up_to_date(self._session, file_row.id, file_hash, embedding_version):
