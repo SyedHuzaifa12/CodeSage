@@ -7,17 +7,30 @@ always addressable by one id with no separate mapping table.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Optional
 
 from qdrant_client import AsyncQdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from app.core.config import get_settings
 
 logger = logging.getLogger("codesage.knowledge.qdrant_store")
 
 COLLECTION_NAME = "repository_chunks"
+
+# Pooling an upsert across a whole file-batch (pipeline-optimization
+# pass) means a single transient network hiccup now risks failing every
+# file in that batch, not just one (observed live: a `ReadTimeout`
+# surfacing as `ResponseHandlingException` on one upsert call during
+# benchmarking, which previously would only ever have cost one file).
+# A short, bounded retry with backoff — the same pattern already used
+# for the LLM provider's own call reliability (``ai/llm/provider.py``) —
+# is the cheap, in-scope mitigation for that specific new risk.
+_UPSERT_MAX_RETRIES = 2
+_UPSERT_RETRY_BACKOFF_SECONDS = 1.0
 
 
 async def ensure_collection(client: AsyncQdrantClient) -> None:
@@ -119,15 +132,41 @@ def build_point(
 
 
 async def upsert_points(client: AsyncQdrantClient, points: list[models.PointStruct]) -> None:
-    """Upsert a batch of points into the collection.
+    """Upsert a batch of points into the collection, with bounded retry.
+
+    A pooled upsert now covers an entire file-batch's chunks (pipeline-
+    optimization pass), so a single transient network error has a wider
+    blast radius than before this pass — retried here, close to the I/O
+    boundary, rather than pushed up to the caller (``KnowledgeService``
+    would otherwise have to special-case "retry just the upsert step").
 
     Args:
         client: The shared async Qdrant client.
         points: Points to write (no-op if empty).
+
+    Raises:
+        ResponseHandlingException: If every retry attempt still fails
+            (a genuinely unreachable Qdrant, not a transient blip) —
+            propagates up so the caller's existing batch-failure
+            handling (log + count + continue) still applies.
     """
     if not points:
         return
-    await client.upsert(collection_name=COLLECTION_NAME, points=points)
+    last_exc: Optional[Exception] = None
+    for attempt in range(_UPSERT_MAX_RETRIES + 1):
+        try:
+            await client.upsert(collection_name=COLLECTION_NAME, points=points)
+            return
+        except ResponseHandlingException as exc:
+            last_exc = exc
+            if attempt < _UPSERT_MAX_RETRIES:
+                logger.warning(
+                    "Qdrant upsert of %d point(s) failed (attempt %d/%d): %s — retrying",
+                    len(points), attempt + 1, _UPSERT_MAX_RETRIES + 1, exc,
+                )
+                await asyncio.sleep(_UPSERT_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 async def delete_points_by_ids(client: AsyncQdrantClient, point_ids: list[uuid.UUID]) -> None:

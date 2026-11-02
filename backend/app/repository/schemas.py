@@ -53,6 +53,7 @@ class RepositoryResponse(BaseModel):
     indexing_status: str
     indexing_progress: int
     error_message: Optional[str]
+    celery_task_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

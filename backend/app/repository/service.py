@@ -9,6 +9,7 @@ indexes — that is Ingestion's and Knowledge's job respectively
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -79,6 +80,7 @@ class RepositoryService:
         await repository_db.save(self._session, repository)
         logger.info("Repository %s transitioning to CLONING at %s", repository.id, local_path)
 
+        clone_started = time.perf_counter()
         try:
             clone_repository(payload.github_url, local_path)
         except Exception as exc:
@@ -87,19 +89,28 @@ class RepositoryService:
             await repository_db.save(self._session, repository)
             logger.error("Repository %s transitioned to FAILED: %s", repository.id, exc)
             raise
+        clone_ms = int((time.perf_counter() - clone_started) * 1000)
 
         repository.status = "ready"
         repository.error_message = None
         await repository_db.save(self._session, repository)
-        logger.info("Repository %s transitioned to READY", repository.id)
+        logger.info("Repository %s transitioned to READY (clone_ms=%d)", repository.id, clone_ms)
 
+        scan_started = time.perf_counter()
+        excluded_count = 0
         try:
-            await self._workspace_service.scan_repository(repository.id)
+            workspace = await self._workspace_service.scan_repository(repository.id)
+            excluded_count = workspace.excluded_files_count
         except Exception as exc:
             # A failed initial scan must not fail the clone itself — the
             # repository is genuinely ready; the workspace independently
             # records its own failed state, discoverable via its own endpoints.
             logger.error("Initial workspace scan failed for repository %s: %s", repository.id, exc)
+        scan_ms = int((time.perf_counter() - scan_started) * 1000)
+        logger.info(
+            "STAGE_TIMING repository=%s clone_ms=%d scan_ms=%d excluded_files=%d",
+            repository.id, clone_ms, scan_ms, excluded_count,
+        )
 
         return repository
 

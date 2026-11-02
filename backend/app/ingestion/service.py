@@ -23,7 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.postgres import get_db
 from app.db.qdrant import get_qdrant_client
 from app.ingestion import repository as ingestion_db
-from app.ingestion.exceptions import RepositoryNotReadyError, WorkspaceNotFoundError, WorkspaceScanError
+from app.ingestion.exceptions import (
+    IndexingAlreadyInProgressError,
+    NoIndexingInProgressError,
+    RepositoryNotReadyError,
+    WorkspaceNotFoundError,
+    WorkspaceScanError,
+)
 from app.ingestion.utils import scan_directory
 from app.knowledge import repository as knowledge_db
 from app.knowledge.qdrant_store import delete_points_by_repository
@@ -140,10 +146,15 @@ class WorkspaceService:
         workspace.folder_count = scan_result.folder_count
         workspace.repository_size_bytes = scan_result.repository_size_bytes
         workspace.language_distribution = scan_result.language_distribution
+        workspace.excluded_files_count = scan_result.excluded_count
+        workspace.excluded_by_reason = scan_result.excluded_by_reason
+        workspace.excluded_samples = scan_result.excluded_samples
         await ingestion_db.save_workspace(self._session, workspace)
         logger.info(
-            "Workspace %s transitioned to READY for repository %s (%d files, %d folders)",
+            "Workspace %s transitioned to READY for repository %s (%d files, %d folders, "
+            "%d excluded as noise: %s)",
             workspace.id, repository_id, scan_result.total_files, scan_result.folder_count,
+            scan_result.excluded_count, scan_result.excluded_by_reason,
         )
         return workspace
 
@@ -231,6 +242,9 @@ class WorkspaceService:
         workspace.folder_count = 0
         workspace.repository_size_bytes = 0
         workspace.language_distribution = {}
+        workspace.excluded_files_count = 0
+        workspace.excluded_by_reason = {}
+        workspace.excluded_samples = []
         await ingestion_db.save_workspace(self._session, workspace)
 
         repository = await self._get_repository(repository_id)
@@ -256,12 +270,21 @@ class WorkspaceService:
         return workspace
 
     async def request_indexing(self, repository_id: uuid.UUID) -> RepositoryWorkspace:
-        """Validate a repository is ready and flip it into the ``indexing`` state.
+        """Validate a repository is ready, flip it into the ``indexing`` state, and dispatch a Celery task.
 
-        Only validates and marks the repository as indexing — the
-        actual Tree-sitter parsing runs afterward, in the background
-        (CLAUDE.md §6: "Repository indexing runs as a FastAPI
-        BackgroundTask"), via a fresh session it creates itself.
+        Validates and marks the repository as indexing, then dispatches
+        ``app.ingestion.tasks.run_indexing_task`` (ADR-026) — the actual
+        Tree-sitter parse/intelligence/knowledge pipeline runs in a
+        Celery worker process, via its own fresh database session, not
+        in this request or this process.
+
+        This is a cheap, fast, user-facing rejection of the common case
+        (the ``IndexingAlreadyInProgressError`` check below) — the real,
+        race-free guarantee against two tasks running concurrently for
+        the same repository is the Redis lock acquired by the task
+        itself (``ingestion/indexing_lock.py``), which this check cannot
+        fully replace: two near-simultaneous requests could both read
+        ``indexing_status != "indexing"`` before either commits.
 
         Args:
             repository_id: The repository's UUID.
@@ -274,11 +297,19 @@ class WorkspaceService:
             RepositoryNotFoundError: If no repository has that id.
             RepositoryNotReadyError: If the repository is not cloned.
             WorkspaceNotFoundError: If the repository has not been scanned.
+            IndexingAlreadyInProgressError: If a previous indexing run for
+                this repository is still in flight (duplicate-job
+                prevention — see the exception's docstring).
         """
         repository = await self._get_repository(repository_id)
         if repository.status != "ready":
             raise RepositoryNotReadyError(
                 f"Repository '{repository_id}' is not ready for indexing (status={repository.status})."
+            )
+        if repository.indexing_status == "indexing":
+            raise IndexingAlreadyInProgressError(
+                f"Repository '{repository_id}' is already indexing (progress={repository.indexing_progress}%); "
+                "wait for it to finish or inspect GET /repositories/{id} before retrying."
             )
         workspace = await self.get_workspace(repository_id)
 
@@ -287,16 +318,80 @@ class WorkspaceService:
         repository.error_message = None
         await repository_db.save(self._session, repository)
         # Committed explicitly, here, rather than left to get_db()'s
-        # end-of-request commit: the background task started right after
+        # end-of-request commit: the Celery task dispatched right after
         # this uses its OWN session and immediately writes to this same
         # row. If this request's transaction were still open (uncommitted)
         # when that write lands, the two sessions deadlock — this request
-        # holds the row lock waiting for the background task to finish,
-        # while the background task blocks waiting for the lock to clear.
+        # holds the row lock waiting for the task to finish, while the
+        # task blocks waiting for the lock to clear.
         await self._session.commit()
         logger.info("Repository %s transitioning to INDEXING", repository_id)
 
+        # Imported locally (not at module scope) to avoid Celery's own
+        # configuration/import machinery running for every ordinary
+        # request-handling import of this module — only paid when a
+        # task is actually about to be dispatched.
+        from app.ingestion.tasks import run_indexing_task
+
+        async_result = run_indexing_task.delay(str(repository_id))
+        repository.celery_task_id = async_result.id
+        await repository_db.save(self._session, repository)
+        await self._session.commit()
+        logger.info("Repository %s indexing dispatched as Celery task %s", repository_id, async_result.id)
+
         return workspace
+
+    async def cancel_indexing(self, repository_id: uuid.UUID) -> Repository:
+        """Cancel an in-flight indexing run (ADR-026).
+
+        Revokes the Celery task (``terminate=True`` — SIGTERM to the
+        worker process currently executing it, since an indexing task
+        has no cooperative cancellation checkpoint of its own to poll),
+        proactively releases this repository's indexing lock rather than
+        waiting out its TTL, and marks the repository ``failed`` with an
+        explicit cancellation message so the frontend's existing
+        ``indexing_status`` poll immediately reflects the outcome.
+
+        Args:
+            repository_id: The repository's UUID.
+
+        Returns:
+            The updated repository row.
+
+        Raises:
+            RepositoryNotFoundError: If no repository has that id.
+            NoIndexingInProgressError: If no indexing run is currently in flight.
+        """
+        repository = await self._get_repository(repository_id)
+        if repository.indexing_status != "indexing":
+            raise NoIndexingInProgressError(
+                f"Repository '{repository_id}' has no indexing run in progress (status={repository.indexing_status})."
+            )
+
+        # Imported locally — see the matching comment in
+        # ``request_indexing`` for why.
+        from app.core.celery_app import celery_app
+        from app.db.redis import get_redis_client
+        from app.ingestion.indexing_lock import lock_key_for
+
+        if repository.celery_task_id:
+            celery_app.control.revoke(repository.celery_task_id, terminate=True, signal="SIGTERM")
+            logger.info("Revoked Celery task %s for repository %s", repository.celery_task_id, repository_id)
+
+        # Best-effort: a terminated task's own `finally` may not run, so
+        # this proactively clears the lock rather than leaving the
+        # repository un-reindexable until the lock's TTL expires. Uses a
+        # direct DELETE (not the compare-and-delete release helper) since
+        # cancellation has no task-held token to compare against here.
+        await get_redis_client().delete(lock_key_for(repository_id))
+
+        repository.indexing_status = "failed"
+        repository.error_message = "Indexing was cancelled by request."
+        await repository_db.save(self._session, repository)
+        await self._session.commit()
+        logger.info("Repository %s indexing CANCELLED", repository_id)
+
+        return repository
 
 
 def get_workspace_service(session: AsyncSession = Depends(get_db)) -> WorkspaceService:

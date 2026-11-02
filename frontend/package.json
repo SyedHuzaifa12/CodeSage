@@ -4,13 +4,13 @@
   "private": true,
   "description": "CodeSage — Repository Intelligence & Context Engine. Sprint 7 production frontend (Next.js App Router).",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "dev": "node scripts/run-normalized.js next dev",
+    "build": "node scripts/run-normalized.js next build",
+    "start": "node scripts/run-normalized.js next start",
+    "lint": "node scripts/run-normalized.js next lint",
+    "typecheck": "node scripts/run-normalized.js tsc --noEmit",
+    "test": "node scripts/run-normalized.js vitest run",
+    "test:watch": "node scripts/run-normalized.js vitest"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.2",

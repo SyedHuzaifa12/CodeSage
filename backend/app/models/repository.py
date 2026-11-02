@@ -57,6 +57,13 @@ class Repository(Base, TimestampMixin):
     indexing_status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_started")
     indexing_progress: Mapped[int] = mapped_column(nullable=False, default=0)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The Celery task id of the most recent indexing dispatch (ADR-026) —
+    # task tracking/cancellation, not the source of truth for progress
+    # (that stays `indexing_status`/`indexing_progress`, read from
+    # Postgres exactly as before, preserving the existing polling
+    # contract). Nullable: unset until the first Celery-backed index
+    # trigger, and harmless to leave stale after a run completes.
+    celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     files: Mapped[list["File"]] = relationship(back_populates="repository", cascade="all, delete-orphan")
     knowledge_relationships: Mapped[list["Relationship"]] = relationship(

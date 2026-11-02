@@ -103,6 +103,26 @@ async def get_chunk_ids_for_file(session: AsyncSession, file_id: uuid.UUID) -> l
     return list(result.scalars().all())
 
 
+async def get_chunk_ids_for_files(session: AsyncSession, file_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    """Fetch every existing chunk id across a batch of files in one query.
+
+    Batched counterpart of :func:`get_chunk_ids_for_file`, used by the
+    knowledge-indexing pipeline's cross-file batching (one query per
+    file-batch instead of one per file).
+
+    Args:
+        session: The active database session.
+        file_ids: The owning files' UUIDs (no-op if empty).
+
+    Returns:
+        The combined current chunk ids across all given files.
+    """
+    if not file_ids:
+        return []
+    result = await session.execute(select(KnowledgeChunk.id).where(KnowledgeChunk.file_id.in_(file_ids)))
+    return list(result.scalars().all())
+
+
 async def delete_chunks_for_file(session: AsyncSession, file_id: uuid.UUID) -> None:
     """Delete every chunk row for a file (Postgres side only — Qdrant is a separate call).
 
@@ -111,6 +131,19 @@ async def delete_chunks_for_file(session: AsyncSession, file_id: uuid.UUID) -> N
         file_id: The owning file's UUID.
     """
     await session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.file_id == file_id))
+    await session.flush()
+
+
+async def delete_chunks_for_files(session: AsyncSession, file_ids: list[uuid.UUID]) -> None:
+    """Delete every chunk row across a batch of files in one statement.
+
+    Args:
+        session: The active database session.
+        file_ids: The owning files' UUIDs (no-op if empty).
+    """
+    if not file_ids:
+        return
+    await session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.file_id.in_(file_ids)))
     await session.flush()
 
 

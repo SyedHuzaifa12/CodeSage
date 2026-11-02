@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import get_db
 from app.ingestion.intelligence_service import RepositoryIntelligenceService
-from app.ingestion.parsing_service import run_parsing_pipeline
 from app.ingestion.schemas import (
     CallGraphData,
     DependencyGraphData,
     GraphEdge,
+    IndexCancelResponse,
     IndexTriggerResponse,
     IntelligenceResponse,
     RepositoryTreeData,
@@ -125,19 +125,20 @@ async def reset_workspace(
 )
 async def trigger_indexing(
     repository_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     service: WorkspaceService = Depends(get_workspace_service),
 ) -> SuccessResponse[IndexTriggerResponse]:
-    """Validate a repository and start Tree-sitter parsing in the background.
+    """Validate a repository and dispatch Tree-sitter parsing as a Celery task (ADR-026).
 
-    Per CLAUDE.md §6, indexing runs as a FastAPI ``BackgroundTask``: this
-    request only validates the repository and flips it to ``indexing``;
-    the actual parse (``parsing_service.run_parsing_pipeline``) runs
-    after the response is sent, using its own fresh database session.
+    This request only validates the repository, flips it to
+    ``indexing``, and dispatches ``app.ingestion.tasks.run_indexing_task``
+    — the actual parse/intelligence/knowledge pipeline runs in a Celery
+    worker process, using its own fresh database session. The response
+    shape and the ``indexing_status``/``indexing_progress`` polling
+    contract are unchanged from the pre-Celery ``BackgroundTask``
+    implementation (ADR-025/ADR-011) — only the execution mechanism moved.
 
     Args:
         repository_id: The repository's UUID.
-        background_tasks: FastAPI's background-task registrar.
         service: Injected workspace service.
 
     Returns:
@@ -145,13 +146,35 @@ async def trigger_indexing(
         poll ``GET /repositories/{id}`` for ``indexing_status``/``indexing_progress``.
     """
     workspace = await service.request_indexing(repository_id)
-    background_tasks.add_task(run_parsing_pipeline, repository_id)
     data = IndexTriggerResponse(
         repository_id=repository_id,
         workspace_status=workspace.status,
         message="Indexing started in the background. Poll GET /repositories/{id} for progress.",
     )
     return SuccessResponse(message="Indexing request accepted.", data=data)
+
+
+@router.post("/index/cancel", response_model=SuccessResponse[IndexCancelResponse])
+async def cancel_indexing(
+    repository_id: uuid.UUID,
+    service: WorkspaceService = Depends(get_workspace_service),
+) -> SuccessResponse[IndexCancelResponse]:
+    """Cancel an in-flight indexing run (ADR-026, new endpoint — additive, not a contract change).
+
+    Revokes the underlying Celery task, releases this repository's
+    indexing lock, and marks the repository ``failed`` with an explicit
+    cancellation message.
+
+    Args:
+        repository_id: The repository's UUID.
+        service: Injected workspace service.
+
+    Returns:
+        The repository's indexing status after cancellation.
+    """
+    repository = await service.cancel_indexing(repository_id)
+    data = IndexCancelResponse(repository_id=repository_id, indexing_status=repository.indexing_status)
+    return SuccessResponse(message="Indexing cancelled.", data=data)
 
 
 @router.get("/intelligence", response_model=SuccessResponse[IntelligenceResponse])
