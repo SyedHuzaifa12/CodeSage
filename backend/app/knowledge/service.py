@@ -23,6 +23,7 @@ Latency-critical design choices:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -41,6 +42,7 @@ from app.knowledge import qdrant_store
 from app.knowledge import repository as knowledge_db
 from app.knowledge.chunking import chunk_file
 from app.knowledge.embedding import get_cached_embeddings, get_embedding_provider, set_cached_embeddings
+from app.knowledge.exceptions import EMBEDDING_ABORT_ERRORS
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_index_state import KnowledgeIndexState
 from app.repository import repository as repository_db
@@ -175,8 +177,14 @@ class KnowledgeService:
                         redis_client=redis_client,
                         qdrant_client=qdrant_client,
                         cache_ttl_seconds=settings.llm.embedding_cache_ttl_seconds,
-                        provider_batch_size=settings.llm.embedding_batch_size,
+                        provider_batch_size=provider.batch_size,
                     )
+                except EMBEDDING_ABORT_ERRORS:
+                    # Quota exhausted / provider down / bad credentials: every remaining batch
+                    # would fail the same way. Stop and report it, rather than marking each
+                    # file failed and finishing as "ready". Finished batches are kept, and a
+                    # re-run skips them (file hash + embedding version fast path).
+                    raise
                 except Exception:  # noqa: BLE001 -- isolate this batch, keep indexing the rest
                     files_failed += len(batch)
                     logger.exception(
@@ -338,7 +346,9 @@ class KnowledgeService:
         embed_sub_batch_size = max(1, provider_batch_size)
         for sub_start in range(0, len(misses), embed_sub_batch_size):
             sub_batch = misses[sub_start : sub_start + embed_sub_batch_size]
-            fresh_vectors.extend(provider.embed([draft.text for draft in sub_batch]))
+            # In a worker thread: hosted providers block on the network (with retry sleeps),
+            # local ONNX inference blocks on the CPU; neither should stall the event loop.
+            fresh_vectors.extend(await asyncio.to_thread(provider.embed, [draft.text for draft in sub_batch]))
         embedding_ms = int((time.perf_counter() - embed_started) * 1000)
 
         fresh_by_hash: dict[str, list[float]] = {}

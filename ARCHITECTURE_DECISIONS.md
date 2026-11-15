@@ -772,6 +772,14 @@ The local fastembed/ONNX model needs ~300 MB resident and ~500 MB while embeddin
 - (–) Network latency on every query embedding (typically hundreds of ms).
 - Amends ADR-015: Cloudflare Workers AI is added as an approved embedding provider; the model stays BAAI/bge-small-en-v1.5.
 
+**Implementation notes (Phase 4; measured, Decision and Rationale unchanged)**
+- **Pooling must be `cls`.** Cloudflare defaults to `mean`; BGE models (and the local ONNX model) use CLS. Measured against the local model on sample texts: `cls` cosine 1.0000, `mean` 0.93–0.99 — a silent quality loss that raises no error. The provider always sends `pooling: "cls"`, rejects any response reporting a different pooling, and `embedding_version` includes the pooling (`cloudflare:@cf/baai/bge-small-en-v1.5:384:cls`).
+- **Batch size:** the "assumed 100" was verified; the API accepted 1,000 texts per call. Default is 100 per request (`CLOUDFLARE_EMBEDDING_BATCH_SIZE`). Inputs over 512 tokens are accepted (truncated by the model), as with the local model; an empty list returns HTTP 400, so the provider never sends one.
+- **Error names:** the quota error is `EmbeddingQuotaExceededError`. It is detected by Cloudflare error code 4006 or the text "daily free allocation" (from Cloudflare's docs; not reproduced, since that needs spending the whole daily quota — covered by a mocked test only). It is *not* retried within the call.
+- **Failures stop indexing instead of being skipped.** Quota exhausted, service unreachable after retries (3 retries, exponential backoff, `Retry-After` honoured and capped at 20 s) and rejected credentials abort the run: the index is marked failed with a user-safe message and already-indexed files are kept (a re-run skips them). Previously a per-batch error was swallowed, so a quota failure would have finished "ready" with every file failed. A single rejected input (HTTP 400) still only fails its own batch.
+- **Parity gate (ADR acceptance gate) — passed.** Same repository (miguelgrinberg/microblog, 214 chunks) indexed once per provider on separate scratch databases, then `retrieval_eval` run on each: Recall@K 1.000 vs 1.000; MRR 0.775 (local) vs 0.792 (Cloudflare), i.e. +1.7 pp, inside the −2 pp tolerance. Stored vectors compared per chunk: minimum cosine 0.999992 across all 214 — numerically the same vectors; the MRR difference is approximate-search/ranking noise, not a quality change. Indexing took 92 s locally vs 8.6 s with Cloudflare. Query latency median 155 ms (local) vs 252 ms (Cloudflare); first query of each run ~3–4 s (cold).
+- Embedding calls run in a worker thread so network waits and retry sleeps never block the event loop. The Celery worker's model warm-up is skipped when the provider is not `fastembed`.
+
 ---
 
 ## ADR-030 — Hosted Public-Demo Deployment Mode on Free Managed Services (Amends ADR-012, Refines ADR-006)

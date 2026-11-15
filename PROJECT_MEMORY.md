@@ -176,11 +176,27 @@ Constraint: free + no card. **No card-free host offers more than 512 MB RAM.**
 - **Known gaps**: backend `/ask` still returns one JSON response (frontend simulates streaming, unchanged); `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and a
   production `NEXT_PUBLIC_API_BASE_URL` must be set at build time; `frontend/.env.example` documents both.
 
+## 12. Phase 4 (hosted embeddings) — what exists now (uncommitted on `feat/auth-guest`)
+
+- **`CloudflareEmbeddingProvider`** in `backend/app/knowledge/embedding.py`, selected with `EMBEDDING_PROVIDER=cloudflare` (default stays `fastembed`).
+  Settings: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_EMBEDDING_POOLING=cls`, `CLOUDFLARE_EMBEDDING_BATCH_SIZE=100` (+ timeout/retry knobs); blank or space-padded values are trimmed.
+- **Pooling must be `cls`** (Cloudflare's default `mean` gives cosine 0.93-0.99 vs the local model = silent quality loss). The provider rejects a response whose
+  pooling differs, and `embedding_version` includes it (`cloudflare:@cf/baai/bge-small-en-v1.5:384:cls`), so switching providers re-embeds.
+- **Errors**: `EmbeddingQuotaExceededError` / `EmbeddingUnavailableError` / `EmbeddingConfigurationError` abort the indexing run (state `failed`, user-safe message,
+  finished batches kept); `EmbeddingRequestError` (HTTP 400) only fails its own batch. Retries: 3, exponential backoff, `Retry-After` capped at 20 s.
+  Quota detection (code 4006 / "daily free allocation") comes from the docs and is only covered by a mocked test.
+- Knowledge service: embedding runs in a thread; sub-batch size comes from `provider.batch_size`; Celery warm-up skipped for non-local providers.
+- **Measured (gate passed)**: microblog, 214 chunks, same repo indexed per provider on scratch DBs: Recall@K 1.000 vs 1.000, MRR 0.775 (local) vs 0.792 (Cloudflare);
+  per-chunk cosine min 0.999992; index time 92 s (local) vs 8.6 s (Cloudflare); query median 155 ms vs 252 ms. API accepts >= 1000 texts per call; ~1,841 neurons/M tokens.
+- **Tests**: 29 new in `test_embedding_cloudflare.py` (mock transport, no network); backend suite 397 passed, 1 skipped (Windows symlink). Scratch DBs/Redis/Qdrant data removed.
+- **Not verified**: the quota-exhausted response shape; Cloudflare account has not been checked for a card/billing prompt beyond signup (owner reported it worked).
+- Remaining local `/ask` path unchanged. Reranker is disabled by default (it would load another ONNX model - check in Phase 5 RSS gate).
+
 ## 9. Open items / unverified assumptions
 
 - Render API fits in 512 MB without the local model (estimated ~200 MB — must measure).
 - Indexing speed at ~0.1–0.25 vCPU; guest repo size caps needed.
-- Cloudflare Workers AI: batch limit, free-tier card requirement, retrieval parity vs local ONNX (run `retrieval_eval`).
+- Cloudflare Workers AI: ~~batch limit, retrieval parity~~ measured in Phase 4 (see s12); still unverified: the exact quota-exhausted response.
 - Whether Upstash supports what the Celery config assumes (moot in hosted mode — no Celery there).
 - Groq free-tier rate limits (not researched); Ollama fallback is useless in the hosted deployment.
 - Per-user repo quota for logged-in users and daily question caps are tunable defaults, not decided.

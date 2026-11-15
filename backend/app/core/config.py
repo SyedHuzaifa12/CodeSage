@@ -179,10 +179,23 @@ class LLMSettings(BaseSettings):
     # provider above — swapping to a hosted embedding API later only
     # means adding another branch in knowledge/embedding.py, never a
     # settings redesign.
-    embedding_provider: Literal["fastembed"] = "fastembed"
+    embedding_provider: Literal["fastembed", "cloudflare"] = "fastembed"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dimension: int = 384
     embedding_batch_size: int = 32
+    # Cloudflare Workers AI (ADR-029): the same BGE-small weights hosted,
+    # so a 512MB free host never has to load the ONNX model itself.
+    cloudflare_account_id: Optional[str] = None
+    cloudflare_api_token: Optional[SecretStr] = None
+    cloudflare_embedding_model: str = "@cf/baai/bge-small-en-v1.5"
+    # Cloudflare defaults to mean pooling, but BGE models are trained for
+    # CLS pooling (what the local ONNX model uses). Measured: "cls" gives
+    # cosine 1.0000 against the local vectors, "mean" only 0.93-0.99.
+    cloudflare_embedding_pooling: Literal["cls", "mean"] = "cls"
+    cloudflare_embedding_batch_size: int = 100  # measured: the API accepts at least 1000 per call
+    cloudflare_timeout_seconds: float = 30.0
+    cloudflare_max_retries: int = 3
+    cloudflare_retry_backoff_seconds: float = 1.0
     embedding_cache_ttl_seconds: int = 2_592_000  # 30 days — Redis is a pure perf cache, never the source of truth
     embedding_model_cache_dir: str = "data/embedding_cache"
     # How many files' chunks are pooled into one embed()/Qdrant-upsert
@@ -207,7 +220,21 @@ class LLMSettings(BaseSettings):
         Returns:
             ``"{provider}:{model}:{dimension}"``.
         """
+        if self.embedding_provider == "cloudflare":
+            # Pooling is part of the identity: switching it changes the vector space.
+            return (
+                f"cloudflare:{self.cloudflare_embedding_model}:{self.embedding_dimension}"
+                f":{self.cloudflare_embedding_pooling}"
+            )
         return f"{self.embedding_provider}:{self.embedding_model}:{self.embedding_dimension}"
+
+    @field_validator("cloudflare_account_id", "cloudflare_api_token", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` as "not configured" and trim stray whitespace (``KEY= value`` would corrupt the API URL)."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
 
 class LoggingSettings(BaseSettings):
@@ -544,6 +571,10 @@ class Settings:
             problems.append("INTERNAL_API_TOKEN is required for the guest-cleanup endpoint.")
         if self.app.debug:
             problems.append("DEBUG must be false in production.")
+        if self.llm.embedding_provider == "cloudflare" and (
+            not self.llm.cloudflare_account_id or self.llm.cloudflare_api_token is None
+        ):
+            problems.append("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required when EMBEDDING_PROVIDER=cloudflare.")
         return problems
 
 

@@ -27,9 +27,35 @@ class KnowledgeIndexingError(KnowledgeError):
     """Raised when the knowledge-indexing pipeline fails at the repository level."""
 
 
+class EmbeddingError(KnowledgeError):
+    """Base class for embedding-provider failures. Messages are safe to show to users."""
+
+
+class EmbeddingRequestError(EmbeddingError):
+    """The provider rejected this particular input (HTTP 4xx). Retrying the same input cannot help."""
+
+
+class EmbeddingQuotaExceededError(EmbeddingError):
+    """The hosted provider's free allowance is used up; retrying before it resets is pointless."""
+
+
+class EmbeddingUnavailableError(EmbeddingError):
+    """The provider could not be reached, or kept failing after retries. Retrying later may work."""
+
+
+class EmbeddingConfigurationError(EmbeddingError):
+    """Credentials are missing or rejected. Needs an operator, not a retry."""
+
+
+#: Failures that make every further embedding call pointless. Indexing stops
+#: on these instead of marking each remaining file failed and finishing "ready".
+EMBEDDING_ABORT_ERRORS = (EmbeddingQuotaExceededError, EmbeddingUnavailableError, EmbeddingConfigurationError)
+
 _STATUS_BY_EXCEPTION: dict[type[KnowledgeError], int] = {
     RepositoryNotIndexedError: status.HTTP_404_NOT_FOUND,
     KnowledgeIndexingError: status.HTTP_500_INTERNAL_SERVER_ERROR,
+    EmbeddingQuotaExceededError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    EmbeddingUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 

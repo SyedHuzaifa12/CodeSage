@@ -14,11 +14,18 @@ from __future__ import annotations
 import logging
 import time
 from functools import lru_cache
-from typing import Protocol
+from typing import Callable, Protocol
 
+import httpx
 import redis.asyncio as redis
 
 from app.core.config import LLMSettings, get_settings
+from app.knowledge.exceptions import (
+    EmbeddingConfigurationError,
+    EmbeddingQuotaExceededError,
+    EmbeddingRequestError,
+    EmbeddingUnavailableError,
+)
 
 logger = logging.getLogger("codesage.knowledge.embedding")
 
@@ -30,6 +37,7 @@ class EmbeddingProvider(Protocol):
 
     dimension: int
     version: str
+    batch_size: int  # most texts the caller should hand to one embed() call
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts.
@@ -72,6 +80,7 @@ class FastEmbedProvider:
         self.version = settings.embedding_version
         self._model_name = settings.embedding_model
         self._batch_size = settings.embedding_batch_size
+        self.batch_size = settings.embedding_batch_size
 
         load_started = time.perf_counter()
         self._model = TextEmbedding(model_name=settings.embedding_model, cache_dir=settings.embedding_model_cache_dir)
@@ -95,6 +104,163 @@ class FastEmbedProvider:
         return [vector.tolist() for vector in vectors]
 
 
+_MAX_RETRY_AFTER_SECONDS = 20.0
+_QUOTA_ERROR_CODES = {4006}  # Workers AI: "you have used up your daily free allocation" (from Cloudflare's docs, not reproducible without spending the quota)
+
+
+def _read_cloudflare_error(response: httpx.Response) -> tuple[int | None, str]:
+    """Extract ``(code, message)`` from a Cloudflare error body without ever raising."""
+    try:
+        errors = response.json().get("errors") or []
+        first = errors[0] if errors else {}
+        return first.get("code"), str(first.get("message", ""))[:200]
+    except Exception:  # noqa: BLE001 -- an unparseable error body must not mask the HTTP status
+        return None, response.text[:200]
+
+
+class CloudflareEmbeddingProvider:
+    """Hosted embeddings via Cloudflare Workers AI (ADR-029).
+
+    Same BGE-small weights as ``FastEmbedProvider``, 384 dimensions, so
+    vectors are interchangeable *when pooling matches*: this provider
+    requests CLS pooling (Cloudflare's default is mean) and was measured
+    at cosine 1.0000 against the local model. Exists so a 512MB host never
+    loads the ~300MB ONNX model.
+
+    Synchronous on purpose, to match ``EmbeddingProvider.embed`` — callers
+    run it in a worker thread. Failures are raised as ``EmbeddingError``
+    subclasses carrying user-safe messages; the API token is never put in
+    a message or log line.
+    """
+
+    def __init__(
+        self,
+        settings: LLMSettings,
+        *,
+        client: httpx.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Validate configuration and open the HTTP client.
+
+        Args:
+            settings: The active LLM/embedding settings.
+            client: Optional pre-built client (tests inject a mock transport).
+            sleep: Delay function used between retries (tests inject a no-op).
+
+        Raises:
+            EmbeddingConfigurationError: If the account id or token is missing.
+        """
+        token = settings.cloudflare_api_token
+        if not settings.cloudflare_account_id or token is None:
+            raise EmbeddingConfigurationError(
+                "Cloudflare embeddings are enabled but CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN are not set."
+            )
+        self.dimension = settings.embedding_dimension
+        self.version = settings.embedding_version
+        self.batch_size = max(1, settings.cloudflare_embedding_batch_size)
+        self._pooling = settings.cloudflare_embedding_pooling
+        self._max_retries = max(0, settings.cloudflare_max_retries)
+        self._backoff = settings.cloudflare_retry_backoff_seconds
+        self._sleep = sleep
+        self._url = (
+            f"https://api.cloudflare.com/client/v4/accounts/{settings.cloudflare_account_id}"
+            f"/ai/run/{settings.cloudflare_embedding_model}"
+        )
+        self._client = client or httpx.Client(timeout=settings.cloudflare_timeout_seconds)
+        self._headers = {"Authorization": f"Bearer {token.get_secret_value()}"}
+        self.neurons_used = 0.0  # running total from Cloudflare's cf-ai-neurons header, for cost visibility
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed texts, splitting into API-sized requests.
+
+        Args:
+            texts: Chunk texts to embed, in order.
+
+        Returns:
+            One 384-dimensional vector per input, same order.
+
+        Raises:
+            EmbeddingQuotaExceededError: Daily free quota is used up.
+            EmbeddingUnavailableError: Network failure or repeated 429/5xx.
+            EmbeddingConfigurationError: Token rejected.
+            EmbeddingRequestError: The input itself was rejected.
+        """
+        if not texts:  # Cloudflare answers an empty list with HTTP 400
+            return []
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            vectors.extend(self._embed_request(texts[start : start + self.batch_size]))
+        return vectors
+
+    def _embed_request(self, texts: list[str]) -> list[list[float]]:
+        attempt = 0
+        while True:
+            attempt += 1
+            retry_after: float | None = None
+            try:
+                response = self._client.post(
+                    self._url, headers=self._headers, json={"text": texts, "pooling": self._pooling}
+                )
+            except httpx.HTTPError as exc:
+                failure = f"network error ({type(exc).__name__})"
+            else:
+                if response.status_code == 200:
+                    return self._parse(response, len(texts))
+                code, message = _read_cloudflare_error(response)
+                status = response.status_code
+                if code in _QUOTA_ERROR_CODES or "daily free allocation" in message.lower():
+                    raise EmbeddingQuotaExceededError(
+                        "The hosted embedding service's daily free quota is used up. Indexing stopped; "
+                        "files already indexed are kept. Try again after 00:00 UTC."
+                    )
+                if status in (401, 403):
+                    raise EmbeddingConfigurationError(
+                        f"Cloudflare rejected the embedding API token (HTTP {status}); check CLOUDFLARE_API_TOKEN."
+                    )
+                if status != 429 and status < 500:
+                    raise EmbeddingRequestError(f"Cloudflare rejected the embedding request (HTTP {status}): {message}")
+                failure = f"HTTP {status}"
+                retry_after = _parse_retry_after(response)
+
+            if attempt > self._max_retries:
+                raise EmbeddingUnavailableError(
+                    f"The hosted embedding service is unavailable ({failure}) after {attempt} attempts. "
+                    "Indexing stopped; files already indexed are kept. Try again in a few minutes."
+                )
+            delay = retry_after if retry_after is not None else self._backoff * 2 ** (attempt - 1)
+            logger.warning("Cloudflare embeddings %s; retry %d/%d in %.1fs", failure, attempt, self._max_retries, delay)
+            self._sleep(delay)
+
+    def _parse(self, response: httpx.Response, expected: int) -> list[list[float]]:
+        try:
+            body = response.json()
+            result = body["result"]
+            data = result["data"]
+            returned_pooling = result.get("pooling")
+        except Exception as exc:  # noqa: BLE001
+            raise EmbeddingUnavailableError("The hosted embedding service returned an unreadable response.") from exc
+        # A silent fallback to mean pooling would corrupt retrieval without any error, so verify what was actually used.
+        if returned_pooling is not None and returned_pooling != self._pooling:
+            raise EmbeddingConfigurationError(
+                f"Cloudflare used '{returned_pooling}' pooling but '{self._pooling}' was requested."
+            )
+        if len(data) != expected or any(len(vector) != self.dimension for vector in data):
+            raise EmbeddingUnavailableError("The hosted embedding service returned vectors of an unexpected shape.")
+        try:
+            self.neurons_used += float(response.headers.get("cf-ai-neurons", 0))
+        except ValueError:
+            pass
+        return [[float(x) for x in vector] for vector in data]
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Return the server's ``Retry-After`` seconds, capped, or ``None`` if absent/unusable."""
+    try:
+        return min(max(float(response.headers["retry-after"]), 0.0), _MAX_RETRY_AFTER_SECONDS)
+    except (KeyError, ValueError):
+        return None
+
+
 @lru_cache
 def get_embedding_provider() -> EmbeddingProvider:
     """Return the process-wide cached embedding provider.
@@ -114,6 +280,8 @@ def get_embedding_provider() -> EmbeddingProvider:
     settings = get_settings().llm
     if settings.embedding_provider == "fastembed":
         return FastEmbedProvider(settings)
+    if settings.embedding_provider == "cloudflare":
+        return CloudflareEmbeddingProvider(settings)
     raise ValueError(f"Unknown embedding provider: {settings.embedding_provider!r}")
 
 

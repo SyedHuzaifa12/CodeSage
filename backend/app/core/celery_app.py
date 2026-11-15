@@ -108,6 +108,11 @@ def _warm_up_embedding_model(**kwargs) -> None:
     real task if this pre-warm itself fails for any reason.
     """
     try:
+        from app.core.config import get_settings
+
+        if get_settings().llm.embedding_provider != "fastembed":
+            return  # nothing to load locally; a hosted provider would just spend quota on a throwaway call
+
         from app.knowledge.embedding import get_embedding_provider
 
         provider = get_embedding_provider()
