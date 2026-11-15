@@ -1,0 +1,29 @@
+# Netlify build settings — CodeSage frontend (Next.js 14, App Router). Netlify's Next.js runtime is installed
+# automatically; nothing to declare here beyond where the app lives.
+#
+# Set these in the Netlify UI (Project configuration -> Environment variables), scope "Builds". They are PUBLIC values
+# read at BUILD time, so changing one needs a new deploy:
+#   NEXT_PUBLIC_API_BASE_URL         https://<your-api>.onrender.com      (the Render API service, no trailing slash)
+#   NEXT_PUBLIC_TURNSTILE_SITE_KEY   <Turnstile site key>                 (public; the SECRET key stays on the backend)
+
+[build]
+  base = "frontend"
+  command = "npm run build"
+  # Build only when the frontend (or this file) changed. A Netlify production deploy costs 15 of the free plan's 300
+  # monthly credits, so a backend-only commit must not spend one. Exit 0 = skip, non-zero = build; on a site's very
+  # first deploy there is no cached commit, the command errors, and Netlify builds.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ../netlify.toml"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# Basic hardening. A full Content-Security-Policy is deliberately left for the polish phase: it needs testing against
+# the Turnstile widget, Mermaid and the fonts, and a wrong policy breaks the page.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

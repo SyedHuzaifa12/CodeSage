@@ -1,0 +1,24 @@
+# Runtime dependencies shared by every deployment (local, CI, hosted).
+# Hosted images install exactly this (see Dockerfile.hosted); requirements.txt adds the local-only extras.
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic-settings
+sqlalchemy[asyncio]
+asyncpg
+alembic
+redis
+qdrant-client
+GitPython
+pathspec>=0.12.1
+tree-sitter
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+numpy
+httpx
+langgraph
+groq
+celery[redis]
+PyJWT

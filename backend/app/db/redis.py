@@ -29,14 +29,24 @@ def get_redis_client() -> redis.Redis:
         A configured async Redis client.
     """
     settings = get_settings()
-    password = settings.redis.redis_password.get_secret_value() if settings.redis.redis_password else None
+    cfg = settings.redis
+    password = cfg.redis_password.get_secret_value() if cfg.redis_password else None
+    tls: dict = {}
+    if cfg.redis_ssl:
+        tls = {"ssl": True, "ssl_cert_reqs": "required", "ssl_check_hostname": True}
+        if cfg.redis_ssl_ca_certs:
+            tls["ssl_ca_certs"] = cfg.redis_ssl_ca_certs
     return redis.Redis(
-        host=settings.redis.redis_host,
-        port=settings.redis.redis_port,
-        db=settings.redis.redis_db,
+        host=cfg.redis_host,
+        port=cfg.redis_port,
+        db=cfg.redis_db,
         password=password,
         decode_responses=True,
         socket_connect_timeout=5,
+        # A hosted Redis may close idle connections; retry once on a timeout instead of surfacing it.
+        socket_keepalive=True,
+        retry_on_timeout=True,
+        **tls,
     )
 
 

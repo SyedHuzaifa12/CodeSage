@@ -10,6 +10,8 @@ from starlette.requests import Request
 from app.auth.exceptions import GuestQuotaExceededError, RateLimitedError, ServiceUnavailableError
 from app.auth.quota import QuotaService
 from app.auth.utils import client_ip, is_admin
+from pydantic import SecretStr
+
 from app.core.config import AuthSettings, Settings
 from app.models.user import User
 
@@ -259,6 +261,10 @@ def test_production_accepts_a_fully_configured_setup() -> None:
     settings = Settings()
     settings.app.environment = "production"
     settings.app.debug = False
+    # Hosting guards (Phase 6): real hostnames and origins, and a real database credential.
+    settings.app.allowed_hosts = "api.example.com"
+    settings.app.cors_origins = "https://app.example"
+    settings.database.database_url = SecretStr("postgresql://app:s3cret@db.example.com/app")
     settings.auth = AuthSettings(
         jwt_secret="a-long-random-production-secret-0123456789", turnstile_secret_key="t",
         github_client_id="i", github_client_secret="s",

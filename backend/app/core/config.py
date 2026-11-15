@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal, Optional
+from urllib.parse import quote
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.db.dsn import PreparedDsn, prepare_asyncpg_dsn
 
 _ENV_FILE = ".env"
 
@@ -60,7 +63,13 @@ class AppSettings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    """PostgreSQL connection parameters."""
+    """PostgreSQL connection parameters.
+
+    Two ways to configure it. Locally, the discrete ``POSTGRES_*`` fields. Hosted, one
+    ``DATABASE_URL`` exactly as the provider shows it (Neon's string works unmodified);
+    when set it wins. ``MIGRATION_DATABASE_URL`` optionally points migrations at a direct
+    (non-pooled) endpoint, which is what DDL should use; it falls back to ``DATABASE_URL``.
+    """
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
 
@@ -69,20 +78,46 @@ class DatabaseSettings(BaseSettings):
     postgres_user: str = "codesage"
     postgres_password: SecretStr = SecretStr("codesage")
     postgres_db: str = "codesage"
+    postgres_sslmode: Optional[str] = None  # discrete mode only; a URL carries its own ?sslmode=
+    database_url: Optional[SecretStr] = None
+    migration_database_url: Optional[SecretStr] = None
+    # A Neon compute scales to zero after 5 idle minutes and drops connections; recycling below that
+    # keeps the pool from handing out a connection the server has already closed.
+    postgres_pool_size: int = 5
+    postgres_max_overflow: int = 10
+    postgres_pool_recycle_seconds: int = 240
+
+    @field_validator("database_url", "migration_database_url", "postgres_sslmode", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` as "not configured"."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    def prepared(self, *, migration: bool = False) -> PreparedDsn:
+        """The SQLAlchemy URL and driver arguments for this configuration.
+
+        Args:
+            migration: Use ``MIGRATION_DATABASE_URL`` (direct endpoint) when it is set.
+
+        Raises:
+            ValueError: If a configured URL is unusable. The message never contains the URL.
+        """
+        raw = (self.migration_database_url if migration and self.migration_database_url else self.database_url)
+        if raw is not None:
+            return prepare_asyncpg_dsn(raw.get_secret_value())
+        built = (
+            f"postgresql+asyncpg://{quote(self.postgres_user, safe='')}:"
+            f"{quote(self.postgres_password.get_secret_value(), safe='')}@"
+            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+        return prepare_asyncpg_dsn(built, sslmode=self.postgres_sslmode)
 
     @property
     def async_dsn(self) -> str:
-        """Build the SQLAlchemy async DSN for the configured PostgreSQL instance.
-
-        Returns:
-            An ``postgresql+asyncpg://`` connection string built from the
-            individual host/port/credential fields.
-        """
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:"
-            f"{self.postgres_password.get_secret_value()}@"
-            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        """The SQLAlchemy async URL (kept for callers that only need the string; ignores driver arguments)."""
+        return self.prepared().url
 
 
 class RedisSettings(BaseSettings):
@@ -94,6 +129,17 @@ class RedisSettings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[SecretStr] = None
+    # Upstash (and most hosted Redis) is TLS-only. Certificates are verified against the system CAs,
+    # or against ``redis_ssl_ca_certs`` for a private CA.
+    redis_ssl: bool = False
+    redis_ssl_ca_certs: Optional[str] = None
+
+    @field_validator("redis_ssl_ca_certs", mode="before")
+    @classmethod
+    def _blank_ca_means_unset(cls, value):
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
 
 class CelerySettings(BaseSettings):
@@ -183,6 +229,25 @@ class QdrantSettings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_http_port: int = 6333
     qdrant_grpc_port: int = 6334
+    # Qdrant Cloud: one HTTPS URL plus an API key. When ``qdrant_url`` is set it replaces host/ports.
+    qdrant_url: Optional[str] = None
+    qdrant_api_key: Optional[SecretStr] = None
+    qdrant_timeout_seconds: float = 5.0  # a small free cluster answers slower than a local container
+
+    @field_validator("qdrant_url", "qdrant_api_key", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` as unset; trim whitespace and a trailing slash from the URL."""
+        if isinstance(value, str):
+            return value.strip().rstrip("/") or None
+        return value
+
+    @field_validator("qdrant_url")
+    @classmethod
+    def _url_needs_a_scheme(cls, value):
+        if value is not None and not value.startswith(("http://", "https://")):
+            raise ValueError("QDRANT_URL must start with http:// or https:// (copy it from the cluster page).")
+        return value
 
 
 class LLMSettings(BaseSettings):
@@ -584,6 +649,24 @@ class Settings:
         self.indexing = IndexingSettings()
         self.auth = AuthSettings()
 
+    def _hosting_problems(self) -> list[str]:
+        """Checks that only matter once the app is reachable from the internet."""
+        import importlib.util
+
+        problems: list[str] = []
+        if "*" in self.app.allowed_hosts_list:
+            problems.append("ALLOWED_HOSTS must list your real hostnames, not '*' (e.g. 'myapi.onrender.com').")
+        try:
+            self.database.prepared()
+        except ValueError as exc:
+            problems.append(f"Database configuration: {exc}")
+        else:
+            if self.database.database_url is None and self.database.postgres_password.get_secret_value() == "codesage":
+                problems.append("Set DATABASE_URL (or a real POSTGRES_PASSWORD): the default database password is public.")
+        if self.llm.embedding_provider == "fastembed" and importlib.util.find_spec("fastembed") is None:
+            problems.append("EMBEDDING_PROVIDER=fastembed but fastembed is not installed (use EMBEDDING_PROVIDER=cloudflare).")
+        return problems
+
     def production_problems(self) -> list[str]:
         """List security-relevant misconfigurations that must block a non-development start.
 
@@ -598,21 +681,26 @@ class Settings:
         if self.app.environment == "development":
             return []
         problems: list[str] = []
-        secret = self.auth.jwt_secret.get_secret_value()
-        if secret == _DEV_JWT_SECRET or len(secret) < _MIN_JWT_SECRET_LENGTH:
-            problems.append(f"JWT_SECRET must be set to a random value of at least {_MIN_JWT_SECRET_LENGTH} characters.")
-        if self.auth.turnstile_secret_key is None:
-            problems.append("TURNSTILE_SECRET_KEY is required (guest creation must be bot-protected).")
-        if not self.auth.github_oauth_configured:
-            problems.append("GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI are required.")
+        # Sign-in, bot protection and CORS only exist where users connect: the indexer serves no browsers.
+        if self.app.role in ("api", "all"):
+            secret = self.auth.jwt_secret.get_secret_value()
+            if secret == _DEV_JWT_SECRET or len(secret) < _MIN_JWT_SECRET_LENGTH:
+                problems.append(f"JWT_SECRET must be set to a random value of at least {_MIN_JWT_SECRET_LENGTH} characters.")
+            if self.auth.turnstile_secret_key is None:
+                problems.append("TURNSTILE_SECRET_KEY is required (guest creation must be bot-protected).")
+            if not self.auth.github_oauth_configured:
+                problems.append("GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI are required.")
+            if "*" in self.app.cors_origins_list:
+                problems.append("CORS_ORIGINS must list your real frontend origin(s), not '*' (credentials are allowed).")
         if self.auth.internal_api_token is None:
-            problems.append("INTERNAL_API_TOKEN is required for the guest-cleanup endpoint.")
+            problems.append("INTERNAL_API_TOKEN is required (it guards the internal wake/cleanup endpoints; API and indexer must share it).")
         if self.app.debug:
             problems.append("DEBUG must be false in production.")
         if self.indexing.indexing_backend == "postgres" and self.app.role == "api" and not self.indexing.indexer_url:
             problems.append("INDEXER_URL is required for ROLE=api with INDEXING_BACKEND=postgres (the API must be able to wake the indexer).")
         if self.app.role == "indexer" and self.indexing.indexing_backend != "postgres":
             problems.append("ROLE=indexer requires INDEXING_BACKEND=postgres.")
+        problems.extend(self._hosting_problems())
         if self.llm.embedding_provider == "cloudflare" and (
             not self.llm.cloudflare_account_id or self.llm.cloudflare_api_token is None
         ):

@@ -25,12 +25,23 @@ def get_qdrant_client() -> AsyncQdrantClient:
     Returns:
         A configured :class:`~qdrant_client.AsyncQdrantClient`.
     """
-    settings = get_settings()
+    cfg = get_settings().qdrant
+    api_key = cfg.qdrant_api_key.get_secret_value() if cfg.qdrant_api_key else None
+    timeout = int(cfg.qdrant_timeout_seconds)
+    if cfg.qdrant_url:
+        # Qdrant Cloud: HTTPS + API key. gRPC is not used (the free tier's REST endpoint is enough).
+        # check_compatibility=False: the client's version probe is a blocking HTTP call made while the
+        # client is being constructed, which would stall the event loop if the cluster is waking up.
+        return AsyncQdrantClient(
+            url=cfg.qdrant_url, api_key=api_key, timeout=timeout, prefer_grpc=False, check_compatibility=False
+        )
     return AsyncQdrantClient(
-        host=settings.qdrant.qdrant_host,
-        port=settings.qdrant.qdrant_http_port,
-        grpc_port=settings.qdrant.qdrant_grpc_port,
-        timeout=5,
+        host=cfg.qdrant_host,
+        port=cfg.qdrant_http_port,
+        grpc_port=cfg.qdrant_grpc_port,
+        api_key=api_key,
+        timeout=timeout,
+        check_compatibility=False,
     )
 
 

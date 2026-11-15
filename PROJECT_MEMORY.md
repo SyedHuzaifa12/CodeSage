@@ -205,6 +205,17 @@ Constraint: free + no card. **No card-free host offers more than 512 MB RAM.**
 - **Owner action**: your dev DB is at `f5a1c3d9b7e2`; run `cd backend && alembic upgrade head` (the app refuses to start until every model table exists).
 - **Not done / limits**: indexer concurrency is 1 job per instance; no intermediate progress (single commit, unchanged); the frontend still says "Start indexing" copy in places and its 413 handling only applies to celery mode; Dockerfile/render.yaml/CORS are Phase 6.
 
+## 14. Phase 6 (deployment prep) — what exists now (uncommitted on `feat/auth-guest`)
+
+- **Config for hosted services** (`core/config.py`, `db/dsn.py`, `db/{postgres,redis,qdrant}.py`, `db/migrations/env.py`): `DATABASE_URL` (+ optional direct `MIGRATION_DATABASE_URL`), `REDIS_SSL`/`REDIS_SSL_CA_CERTS`, `QDRANT_URL`/`QDRANT_API_KEY`/`QDRANT_TIMEOUT_SECONDS`, pool settings. A Neon string works as given (sslmode mapped, `channel_binding` dropped, pooled hosts get statement caching off). Local `POSTGRES_*`/`REDIS_*`/`QDRANT_*` unchanged.
+- **Guards** (`production_problems`): refuse `*` in `ALLOWED_HOSTS`/`CORS_ORIGINS`, the default DB password, a bad `DATABASE_URL`, fastembed-selected-but-missing; user-facing secrets are required only for `api`/`all`. There is no `DEPLOYMENT_MODE` variable (recorded in ADR-030 notes).
+- **Images**: `backend/Dockerfile.hosted` + `requirements-base.txt` + pinned `constraints-hosted.txt` (no fastembed; 710 MB, API ~145 MiB RSS). `requirements.txt` = base + fastembed + pytest + pyyaml. `.dockerignore` now excludes `data/` and `logs/`.
+- **Deploy files (repo root)**: `render.yaml` (two free Docker services, Frankfurt, `/health/live`, `autoDeployTrigger: off`, secrets `sync: false`, JWT `generateValue`) and `netlify.toml` (base `frontend`, Node 20, skip builds when frontend unchanged, security headers).
+- **Verified**: hosted image run as two containers under `ENVIRONMENT=production` against scratch services: guards, TrustedHost, CORS, deep health, Turnstile-verified guest creation, repo indexed in ~9 s with Cloudflare embeddings, retrieval, cross-container wake. TLS verified against throwaway TLS-only Postgres/Redis. 66 new tests (config 43, deploy files 23); one stale existing test (`test_auth_quota::test_production_accepts_a_fully_configured_setup`) updated for the new guards. Backend suite 560 passed, 1 skipped. Scratch data removed.
+- **Owner action list for Phase 7 (accounts; see the setup guide given in chat)**: Qdrant Cloud (Frankfurt, AWS; key with NO expiry), Neon (pooled + direct strings), Upstash (eviction on), Render (GitHub app limited to the repo), Netlify (team `codesage`; pick the site name), GitHub OAuth app for production (needs the Netlify URL), Turnstile widget (needs the Netlify hostname), production Groq key, second Cloudflare token, `INTERNAL_API_TOKEN`. Local GitHub OAuth app (`localhost`) can be set up now to test real sign-in.
+- **Must check in Phase 7**: `TRUSTED_PROXY_HOPS` (client-IP detection behind Render), the `render.yaml` syntax as Render validates it, `INDEXER_URL` (prompted at creation; enter `https://codesage-indexer.onrender.com` or the URL Render shows), `NEXT_PUBLIC_*` set in Netlify before the first build, Render 750 instance-hours/month (no pingers).
+- **Not done**: frontend Linux/Node 20 build (skipped deliberately); CSP; CI/CD (Phase 8).
+
 ## 9. Open items / unverified assumptions
 
 - Render API fits in 512 MB: measured 169-215 MB at import (Linux), ~250 MB peak running — re-confirm on Render in Phase 7.

@@ -20,7 +20,7 @@ RUN apt-get update \
 
 # Installed before the app code so this layer only rebuilds when
 # dependencies change, not on every source edit.
-COPY requirements.txt .
+COPY requirements.txt requirements-base.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .

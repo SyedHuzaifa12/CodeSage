@@ -33,12 +33,15 @@ def get_engine() -> AsyncEngine:
     Returns:
         A configured :class:`~sqlalchemy.ext.asyncio.AsyncEngine`.
     """
-    settings = get_settings()
+    database = get_settings().database
+    prepared = database.prepared()
     return create_async_engine(
-        settings.database.async_dsn,
+        prepared.url,
+        connect_args=prepared.connect_args,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
+        pool_size=database.postgres_pool_size,
+        max_overflow=database.postgres_max_overflow,
+        pool_recycle=database.postgres_pool_recycle_seconds,
         future=True,
     )
 

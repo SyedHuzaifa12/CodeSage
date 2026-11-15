@@ -36,6 +36,8 @@ def _build_redis_url(db: int) -> str:
     """
     settings = get_settings().redis
     auth = f":{settings.redis_password.get_secret_value()}@" if settings.redis_password else ""
+    if settings.redis_ssl:
+        return f"rediss://{auth}{settings.redis_host}:{settings.redis_port}/{db}?ssl_cert_reqs=required"
     return f"redis://{auth}{settings.redis_host}:{settings.redis_port}/{db}"
 
 
