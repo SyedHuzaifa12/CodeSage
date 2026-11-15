@@ -12,11 +12,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.core.config import get_settings
 from app.db.postgres import check_postgres_connection, close_postgres_connection, verify_schema_initialized
 from app.db.qdrant import check_qdrant_connection, close_qdrant_connection, get_qdrant_client
 from app.db.redis import check_redis_connection, close_redis_connection
 from app.exceptions.base import (
     CacheConnectionError,
+    ConfigurationError,
     DatabaseConnectionError,
     SchemaNotInitializedError,
     VectorStoreConnectionError,
@@ -45,6 +47,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         VectorStoreConnectionError: If Qdrant is unreachable at startup.
     """
     logger.info("Starting CodeSage backend")
+
+    problems = get_settings().production_problems()
+    if problems:
+        raise ConfigurationError("Unsafe production configuration: " + " ".join(problems))
 
     if not await check_postgres_connection():
         raise DatabaseConnectionError("Unable to establish a PostgreSQL connection at startup.")

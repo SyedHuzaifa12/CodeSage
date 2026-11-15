@@ -40,12 +40,17 @@ class RepositoryDeletionError(RepositoryError):
     """Raised when a repository's local clone cannot be removed from disk."""
 
 
+class RepositoryTooLargeError(RepositoryError):
+    """Raised when a cloned repository exceeds the caller's size or file-count limit."""
+
+
 _STATUS_BY_EXCEPTION: dict[type[RepositoryError], int] = {
     InvalidRepositoryURLError: status.HTTP_400_BAD_REQUEST,
     RepositoryAlreadyExistsError: status.HTTP_409_CONFLICT,
     RepositoryNotFoundError: status.HTTP_404_NOT_FOUND,
     RepositoryCloneError: status.HTTP_502_BAD_GATEWAY,
     RepositoryDeletionError: status.HTTP_500_INTERNAL_SERVER_ERROR,
+    RepositoryTooLargeError: status.HTTP_413_CONTENT_TOO_LARGE,
 }
 
 

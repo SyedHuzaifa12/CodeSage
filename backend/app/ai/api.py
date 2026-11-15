@@ -12,12 +12,19 @@ from fastapi import APIRouter, Depends
 
 from app.ai.schemas.dto import AskRequest, AskResponseData
 from app.ai.services import AIOrchestratorService, get_ai_service
+from app.auth.dependencies import enforce_question_quota, get_accessible_repository
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/repositories/{repository_id}", tags=["ai"])
+router = APIRouter(
+    prefix="/repositories/{repository_id}", tags=["ai"], dependencies=[Depends(get_accessible_repository)]
+)
 
 
-@router.post("/ask", response_model=SuccessResponse[AskResponseData])
+# The quota dependency is listed on the route (not the router) so it runs
+# after the router-level ownership check: a 404 never costs a question.
+@router.post(
+    "/ask", response_model=SuccessResponse[AskResponseData], dependencies=[Depends(enforce_question_quota)]
+)
 async def ask_repository(
     repository_id: uuid.UUID, payload: AskRequest, service: AIOrchestratorService = Depends(get_ai_service),
 ) -> SuccessResponse[AskResponseData]:

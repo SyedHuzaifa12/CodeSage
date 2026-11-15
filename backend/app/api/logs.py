@@ -11,12 +11,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.auth.dependencies import require_admin
 from app.core.config import get_settings
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/logs", tags=["logs"])
+# Log lines can contain repository names and user activity: admins only.
+router = APIRouter(prefix="/logs", tags=["logs"], dependencies=[Depends(require_admin)])
 
 
 @router.get("", response_model=SuccessResponse[dict])

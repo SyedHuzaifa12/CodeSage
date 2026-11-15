@@ -11,6 +11,9 @@ from app.ai.api import router as ai_router
 from app.ai.exceptions import register_ai_exception_handlers
 from app.api.health import router as health_router
 from app.api.logs import router as logs_router
+from app.auth.api import internal_router as auth_internal_router
+from app.auth.api import router as auth_router
+from app.auth.exceptions import register_auth_exception_handlers
 from app.core.config import get_settings
 from app.core.lifespan import lifespan
 from app.core.logging import configure_logging
@@ -45,8 +48,11 @@ register_knowledge_exception_handlers(app)
 register_retrieval_exception_handlers(app)
 register_ai_exception_handlers(app)
 register_reports_exception_handlers(app)
+register_auth_exception_handlers(app)
 
 app.include_router(health_router)
+app.include_router(auth_router, prefix=settings.app.api_v1_prefix)
+app.include_router(auth_internal_router, prefix=settings.app.api_v1_prefix)
 app.include_router(repository_router, prefix=settings.app.api_v1_prefix)
 app.include_router(ingestion_router, prefix=settings.app.api_v1_prefix)
 app.include_router(knowledge_router, prefix=settings.app.api_v1_prefix)

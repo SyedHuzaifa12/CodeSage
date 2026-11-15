@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, Index, String, Text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String, Text, false
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,6 +64,17 @@ class Repository(Base, TimestampMixin):
     # contract). Nullable: unset until the first Celery-backed index
     # trigger, and harmless to leave stale after a run completes.
     celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Ownership (ADR-027). Nullable only so rows created before accounts
+    # existed survive the migration; such legacy rows are owned by nobody
+    # and therefore invisible through the API. RESTRICT (not CASCADE) so a
+    # user can never be deleted while rows — and their Qdrant vectors,
+    # which have no FK cascade — still exist; cleanup goes through the
+    # repository service instead.
+    owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    # A public, read-only showcase repository visible to every user.
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
 
     files: Mapped[list["File"]] = relationship(back_populates="repository", cascade="all, delete-orphan")
     knowledge_relationships: Mapped[list["Relationship"]] = relationship(

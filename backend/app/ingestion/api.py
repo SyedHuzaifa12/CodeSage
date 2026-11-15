@@ -12,6 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_accessible_repository, require_repository_write
 from app.db.postgres import get_db
 from app.ingestion.intelligence_service import RepositoryIntelligenceService
 from app.ingestion.schemas import (
@@ -30,7 +31,12 @@ from app.ingestion.service import WorkspaceService, get_workspace_service
 from app.ingestion.utils import build_tree
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/repositories/{repository_id}", tags=["workspace"])
+# Router-level: every route below requires a signed-in caller who owns the
+# repository (or it is a demo) — the 404 happens before any handler runs.
+router = APIRouter(
+    prefix="/repositories/{repository_id}", tags=["workspace"], dependencies=[Depends(get_accessible_repository)]
+)
+_WRITE = [Depends(require_repository_write)]
 
 
 def get_intelligence_service(session: AsyncSession = Depends(get_db)) -> RepositoryIntelligenceService:
@@ -82,7 +88,7 @@ async def get_tree(
     return SuccessResponse(message="Repository tree retrieved.", data=tree)
 
 
-@router.post("/refresh", response_model=SuccessResponse[WorkspaceResponse])
+@router.post("/refresh", response_model=SuccessResponse[WorkspaceResponse], dependencies=_WRITE)
 async def refresh_workspace(
     repository_id: uuid.UUID,
     service: WorkspaceService = Depends(get_workspace_service),
@@ -100,7 +106,7 @@ async def refresh_workspace(
     return SuccessResponse(message="Workspace refreshed.", data=workspace)
 
 
-@router.post("/reset", response_model=SuccessResponse[WorkspaceResponse])
+@router.post("/reset", response_model=SuccessResponse[WorkspaceResponse], dependencies=_WRITE)
 async def reset_workspace(
     repository_id: uuid.UUID,
     service: WorkspaceService = Depends(get_workspace_service),
@@ -122,6 +128,7 @@ async def reset_workspace(
     "/index",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=SuccessResponse[IndexTriggerResponse],
+    dependencies=_WRITE,
 )
 async def trigger_indexing(
     repository_id: uuid.UUID,
@@ -154,7 +161,7 @@ async def trigger_indexing(
     return SuccessResponse(message="Indexing request accepted.", data=data)
 
 
-@router.post("/index/cancel", response_model=SuccessResponse[IndexCancelResponse])
+@router.post("/index/cancel", response_model=SuccessResponse[IndexCancelResponse], dependencies=_WRITE)
 async def cancel_indexing(
     repository_id: uuid.UUID,
     service: WorkspaceService = Depends(get_workspace_service),

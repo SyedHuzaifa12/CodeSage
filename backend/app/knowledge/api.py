@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_accessible_repository, require_repository_write
 from app.db.postgres import get_db
 from app.knowledge import repository as knowledge_db
 from app.knowledge.exceptions import RepositoryNotIndexedError
@@ -28,7 +29,11 @@ from app.repository import repository as repository_db
 from app.repository.exceptions import RepositoryNotFoundError
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/repositories/{repository_id}/knowledge", tags=["knowledge"])
+router = APIRouter(
+    prefix="/repositories/{repository_id}/knowledge",
+    tags=["knowledge"],
+    dependencies=[Depends(get_accessible_repository)],
+)
 
 
 async def _require_repository(session: AsyncSession, repository_id: uuid.UUID) -> None:
@@ -102,7 +107,11 @@ async def list_chunks(
     return SuccessResponse(message="Chunks retrieved.", data=data)
 
 
-@router.post("/reindex", response_model=SuccessResponse[KnowledgeReindexResponse])
+@router.post(
+    "/reindex",
+    response_model=SuccessResponse[KnowledgeReindexResponse],
+    dependencies=[Depends(require_repository_write)],
+)
 async def trigger_reindex(
     repository_id: uuid.UUID, session: AsyncSession = Depends(get_db)
 ) -> SuccessResponse[KnowledgeReindexResponse]:

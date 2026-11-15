@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal, Optional
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_FILE = ".env"
@@ -415,6 +415,93 @@ class IngestionSettings(BaseSettings):
         return _split_csv(self.ingestion_extra_ignored_suffixes)
 
 
+_DEV_JWT_SECRET = "dev-only-insecure-jwt-secret-change-before-deploying"
+_MIN_JWT_SECRET_LENGTH = 32
+
+
+class AuthSettings(BaseSettings):
+    """Authentication, guest access, and abuse-control configuration (ADR-027).
+
+    Quota/limit fields are settings, not constants, so they can be tuned
+    per environment without a code change. Integration credentials
+    (Turnstile, GitHub OAuth) are optional so local development works
+    without them; ``Settings.production_problems`` refuses to start a
+    production process that is missing any of them.
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    jwt_secret: SecretStr = SecretStr(_DEV_JWT_SECRET)
+    jwt_issuer: str = "codesage"
+    access_token_ttl_minutes: int = 15
+    refresh_token_ttl_guest_days: int = 3
+    refresh_token_ttl_user_days: int = 30
+    # A refresh token presented again within this window of its own
+    # rotation is treated as a benign double-submit (e.g. two browser
+    # tabs), not theft: rejected, but the token family is NOT revoked.
+    refresh_reuse_grace_seconds: int = 10
+    guest_ttl_hours: int = 72
+
+    turnstile_secret_key: Optional[SecretStr] = None
+    github_client_id: Optional[str] = None
+    github_client_secret: Optional[SecretStr] = None
+    # The frontend callback URL registered on the GitHub OAuth app; sent
+    # again at code-exchange time, where GitHub requires it to match.
+    github_redirect_uri: Optional[str] = None
+    oauth_state_ttl_seconds: int = 600
+    admin_github_logins: str = ""
+    # Shared secret for server-to-server endpoints (guest cleanup).
+    internal_api_token: Optional[SecretStr] = None
+    # How many trusted reverse proxies sit in front of the app. 0 ignores
+    # X-Forwarded-For entirely (it is attacker-controlled otherwise); N
+    # takes the Nth entry from the END of the header, i.e. the address the
+    # outermost trusted proxy recorded. Must be tuned per host at deploy time.
+    trusted_proxy_hops: int = 0
+
+    guest_max_repositories: int = 1
+    user_max_repositories: int = 5
+    guest_daily_questions: int = 15
+    user_daily_questions: int = 100
+    guest_daily_repository_attempts: int = 3
+    guest_creations_per_ip_per_day: int = 5
+    guest_global_daily_index_cap: int = 30
+    guest_max_repository_files: int = 1500
+    guest_max_repository_mb: int = 40
+
+    @field_validator(
+        "turnstile_secret_key",
+        "github_client_id",
+        "github_client_secret",
+        "github_redirect_uri",
+        "internal_api_token",
+        mode="before",
+    )
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` in a copied ``.env.example`` as "not configured", not as an empty secret."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("jwt_secret", mode="before")
+    @classmethod
+    def _blank_jwt_secret_uses_dev_default(cls, value):
+        """A blank ``JWT_SECRET=`` falls back to the dev default (which production refuses to start with)."""
+        if isinstance(value, str) and not value.strip():
+            return _DEV_JWT_SECRET
+        return value
+
+    @property
+    def admin_github_logins_list(self) -> list[str]:
+        """Parsed, lower-cased admin GitHub logins."""
+        return [login.lower() for login in _split_csv(self.admin_github_logins)]
+
+    @property
+    def github_oauth_configured(self) -> bool:
+        """Whether every GitHub OAuth credential needed for the login flow is present."""
+        return bool(self.github_client_id and self.github_client_secret and self.github_redirect_uri)
+
+
 class Settings:
     """Aggregates every settings group behind a single access point."""
 
@@ -430,6 +517,34 @@ class Settings:
         self.reports = ReportSettings()
         self.ingestion = IngestionSettings()
         self.celery = CelerySettings()
+        self.auth = AuthSettings()
+
+    def production_problems(self) -> list[str]:
+        """List security-relevant misconfigurations that must block a non-development start.
+
+        Applies to ``staging`` as well as ``production``: a staging server
+        is still reachable from the internet, so it must not run with the
+        publicly known development JWT secret or without bot protection.
+
+        Returns:
+            Human-readable problems; empty in development or when the
+            configuration is sound.
+        """
+        if self.app.environment == "development":
+            return []
+        problems: list[str] = []
+        secret = self.auth.jwt_secret.get_secret_value()
+        if secret == _DEV_JWT_SECRET or len(secret) < _MIN_JWT_SECRET_LENGTH:
+            problems.append(f"JWT_SECRET must be set to a random value of at least {_MIN_JWT_SECRET_LENGTH} characters.")
+        if self.auth.turnstile_secret_key is None:
+            problems.append("TURNSTILE_SECRET_KEY is required (guest creation must be bot-protected).")
+        if not self.auth.github_oauth_configured:
+            problems.append("GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI are required.")
+        if self.auth.internal_api_token is None:
+            problems.append("INTERNAL_API_TOKEN is required for the guest-cleanup endpoint.")
+        if self.app.debug:
+            problems.append("DEBUG must be false in production.")
+        return problems
 
 
 @lru_cache

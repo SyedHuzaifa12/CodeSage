@@ -12,6 +12,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,9 +22,19 @@ from app.ingestion.service import WorkspaceService
 from app.knowledge.qdrant_store import delete_points_by_repository
 from app.models.repository import Repository
 from app.repository import repository as repository_db
-from app.repository.exceptions import RepositoryAlreadyExistsError, RepositoryNotFoundError
+from app.repository.exceptions import (
+    RepositoryAlreadyExistsError,
+    RepositoryNotFoundError,
+    RepositoryTooLargeError,
+)
 from app.repository.schemas import RepositoryCreateRequest, RepositoryUpdateRequest
-from app.repository.utils import build_local_path, clone_repository, parse_github_url, remove_local_clone
+from app.repository.utils import (
+    build_local_path,
+    clone_repository,
+    measure_tree,
+    parse_github_url,
+    remove_local_clone,
+)
 
 logger = logging.getLogger("codesage.repository.service")
 
@@ -45,22 +56,32 @@ class RepositoryService:
         self._settings = settings
         self._workspace_service = workspace_service
 
-    async def create_repository(self, payload: RepositoryCreateRequest) -> Repository:
-        """Register a new repository and clone it locally.
+    async def create_repository(
+        self,
+        payload: RepositoryCreateRequest,
+        owner_id: uuid.UUID,
+        max_files: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Repository:
+        """Register a new repository for ``owner_id`` and clone it locally.
 
         Args:
             payload: The validated creation request.
+            owner_id: The user who will own the repository.
+            max_files: If set, reject a clone containing more files than this.
+            max_bytes: If set, reject a clone whose working tree exceeds this size.
 
         Returns:
             The persisted repository, in ``ready`` or ``failed`` status.
 
         Raises:
-            RepositoryAlreadyExistsError: If the URL is already registered.
+            RepositoryAlreadyExistsError: If this owner already imported the URL.
             RepositoryCloneError: If cloning fails (also recorded on the row).
+            RepositoryTooLargeError: If the clone exceeds ``max_files``/``max_bytes``.
         """
         _, repo_name = parse_github_url(payload.github_url)
 
-        existing = await repository_db.get_by_github_url(self._session, payload.github_url)
+        existing = await repository_db.get_by_github_url(self._session, payload.github_url, owner_id)
         if existing is not None:
             raise RepositoryAlreadyExistsError(f"Repository '{payload.github_url}' is already registered.")
 
@@ -69,6 +90,7 @@ class RepositoryService:
             github_url=payload.github_url,
             local_path="",
             status="pending",
+            owner_id=owner_id,
         )
         repository = await repository_db.create(self._session, repository)
         logger.info("Repository %s created with status PENDING", repository.id)
@@ -83,6 +105,13 @@ class RepositoryService:
         clone_started = time.perf_counter()
         try:
             clone_repository(payload.github_url, local_path)
+            if max_files is not None or max_bytes is not None:
+                measure = measure_tree(local_path, max_files, max_bytes)
+                if measure.exceeded:
+                    remove_local_clone(local_path)
+                    raise RepositoryTooLargeError(
+                        "This repository is larger than the free demo allows. Sign in with GitHub to index bigger repositories."
+                    )
         except Exception as exc:
             repository.status = "failed"
             repository.error_message = str(exc)
@@ -131,13 +160,16 @@ class RepositoryService:
             raise RepositoryNotFoundError(f"Repository '{repository_id}' was not found.")
         return repository
 
-    async def list_repositories(self) -> list[Repository]:
-        """Fetch every registered repository.
+    async def list_repositories(self, owner_id: uuid.UUID) -> list[Repository]:
+        """Fetch the repositories a user may see: their own plus every demo repository.
+
+        Args:
+            owner_id: The viewing user.
 
         Returns:
-            All repositories, most recently created first.
+            Visible repositories, most recently created first.
         """
-        return await repository_db.list_all(self._session)
+        return await repository_db.list_visible(self._session, owner_id)
 
     async def update_repository(self, repository_id: uuid.UUID, payload: RepositoryUpdateRequest) -> Repository:
         """Update a repository's mutable fields (currently: display name only).
