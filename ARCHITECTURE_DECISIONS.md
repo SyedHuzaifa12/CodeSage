@@ -36,6 +36,10 @@ These ADRs are binding for Version 1. They are the canonical source of truth alo
 | [024](#adr-024--deterministic-graph-data-as-the-sole-source-of-truth-for-mermaid-diagrams-sprint-6) | Deterministic Graph Data as the Sole Source of Truth for Mermaid Diagrams (Sprint 6) |
 | [025](#adr-025--indexing-pipeline-performance-pass-batching-noise-filtering-duplicate-job-prevention-celery-conflict-flagged-not-implemented) | Indexing Pipeline Performance Pass: Batching, Noise Filtering, Duplicate-Job Prevention (Celery Conflict Flagged, Not Implemented) |
 | [026](#adr-026--celery-based-indexing-supersedes-adr-011) | Celery-Based Indexing (Supersedes ADR-011) |
+| [027](#adr-027--multi-user-accounts-with-guest-first-access-amends-adr-016-claudemd-19) | Multi-User Accounts with Guest-First Access (Amends ADR-016, CLAUDE.md §19) |
+| [028](#adr-028--one-image-two-roles-postgres-job-queue-for-hosted-indexing-amends-adr-026) | One Image, Two Roles, Postgres Job Queue for Hosted Indexing (Amends ADR-026) |
+| [029](#adr-029--cloudflare-workers-ai-as-a-second-embedding-provider-amends-adr-015) | Cloudflare Workers AI as a Second Embedding Provider (Amends ADR-015) |
+| [030](#adr-030--hosted-public-demo-deployment-mode-on-free-managed-services-amends-adr-012-refines-adr-006) | Hosted Public-Demo Deployment Mode on Free Managed Services (Amends ADR-012, Refines ADR-006) |
 
 ---
 
@@ -649,3 +653,151 @@ ADR-011 froze indexing on FastAPI `BackgroundTasks`, explicitly citing "no multi
 - (–) The event-loop-per-process-or-thread constraint means this architecture's concurrency ceiling is "number of worker *processes*," not "worker processes × threads-per-process" — accepted, since fixing it the other way (per-call fresh clients) would cost connection-pooling efficiency the ASGI app currently benefits from, for a concurrency model (in-process threads sharing one asyncio loop's cached async clients) this codebase was never designed around.
 - (–) Intra-repository stage parallelism (concurrent Tree-sitter parsing of one repository's own files) remains unimplemented, as does the parsing-stage incremental-skip limitation ADR-025 already flagged (needs a schema change, still not made without separate approval).
 - (–) A true distributed lock only moves the duplicate-run risk down to "Redis is unavailable" — acceptable, since Redis is already a hard dependency for this app's cache/session-state (ADR-006) and its unavailability already degrades the system broadly, not newly introduced by this ADR.
+
+---
+
+## ADR-027 — Multi-User Accounts with Guest-First Access (Amends ADR-016, CLAUDE.md §19)
+
+**Status:** Accepted. Approved by the project owner ("adrs approved", Phase 3).
+
+**Context**
+V1 was specified as single-user and unauthenticated (PRD Vol.1; Sprint 7 design §14.3); `core/security.py` is empty. CLAUDE.md §19 said "JWT only, no OAuth, SSO, or enterprise IAM". Deploying publicly makes that unsafe: anyone could clone arbitrary repositories onto our hosts, consume the shared LLM and embedding quotas, fill free-tier storage, or delete other people's data. The product goal also needs a low-friction first experience for reviewers who will not create an account before seeing value. The owner decided: anyone may index **one repository without signing in**, after which login is required; GitHub login is preferred.
+
+**Decision**
+- **Identity**: a `users` table with `kind` = `guest` | `user`. `POST /auth/guest` (protected by a Cloudflare Turnstile token) creates a server-side guest identity with a 72-hour expiry. A guest is a real account row, never a client-side flag.
+- **Sessions**: our own JWTs. Access token: HS256 (PyJWT), 15-minute lifetime, claims `sub`, `role`, `jti`, `iat`, `exp`, `iss`; secret ≥ 32 bytes from `JWT_SECRET`. Refresh token: opaque 256-bit random value, stored only as a SHA-256 hash in `refresh_tokens` (with `family_id`), **rotated on every use**; presenting an already-rotated token revokes the entire family. Lifetime 3 days (guest) / 30 days (user).
+- **Token transport**: access token in memory, sent as `Authorization: Bearer`. Refresh token returned in the JSON body and held in browser storage — the frontend (Netlify) and API (Render) are different registrable domains on free hosting, so cross-site cookies are blocked by browsers. Mitigations: short access lifetime, rotation + reuse detection, strict CSP.
+- **GitHub OAuth (identity only)**: scope `read:user`, no repository scopes (public repos only). CSRF `state` stored server-side (Redis, 10-minute TTL). The frontend callback page posts `code` + `state` to `POST /auth/github`; the backend exchanges the code. Our JWTs remain the session mechanism — GitHub only proves identity.
+- **Guest → member**: if the login request carries a valid guest token, that user row is **upgraded in place** (kind `user`, GitHub fields set) so their repository is kept. If the GitHub account already exists, the guest's repositories are reassigned to it and the guest row is deleted.
+- **Authorization**: `repositories.owner_id` (FK `users`) and `repositories.is_demo`. Every repository-scoped route (repository, ingestion, knowledge, retrieval, AI chat, reports, logs) resolves the repository through the current user: owner or `is_demo`, otherwise **404** (no existence leak). Demo repositories are read-only.
+- **Quotas and abuse controls** (all settings-driven): guest max 1 repository; per-user repository cap for members; daily question caps (guest lower than member); per-IP guest-creation rate limit; global daily cap on guest indexing jobs; guest repo caps on file count/size and a clone timeout; only `https://github.com/<owner>/<repo>` URLs; clone hardening (no hooks, no submodules, no LFS, `GIT_TERMINAL_PROMPT=0`). Counters live in Redis fixed windows.
+- **Cleanup**: expired guests and all their data (Postgres rows, Qdrant vectors, Redis keys — reusing the existing delete-repository logic) are purged opportunistically by the indexer plus a daily CI ping to an internal endpoint.
+- **Errors**: existing envelope with codes `UNAUTHENTICATED`, `FORBIDDEN`, `GUEST_QUOTA_EXCEEDED`, `RATE_LIMITED`.
+- **Admin**: `ADMIN_GITHUB_LOGINS` lists who may manage the demo repository.
+- **Placement**: `core/security.py` (JWT encode/decode, `current_user`/`optional_user` dependencies); a new `auth/` module following the §12 layout.
+
+**Rationale**
+- Guest-first removes the signup wall for a 60-second reviewer while the server, not the browser, enforces the limit.
+- GitHub login suits a developer tool: no password storage, no email verification/reset (we have no email provider or domain), and a clean path to private repos later.
+- Owning the session layer (JWT + rotation) keeps "JWT-based auth" from CLAUDE.md §19 true in spirit and demonstrates real security engineering rather than outsourcing it to a vendor.
+- 404-not-403 and owner checks close the IDOR hole that exists today.
+
+**Consequences / Trade-offs**
+- (+) Public deployment becomes defensible; abuse is bounded by per-guest, per-IP and global limits.
+- (+) Guest repos auto-expire, protecting free-tier storage.
+- (–) Refresh token in browser storage is weaker against XSS than an httpOnly cookie; revisit if a same-site custom domain becomes available.
+- (–) Adds tables (`users`, `refresh_tokens`) and a column on `repositories` (Alembic migration), which CLAUDE.md §9 lists as a controlled change — approved here.
+- (–) Redis counters add commands against Upstash's free quota (bounded by the per-IP and per-user limits).
+- (–) Shared IPs (colleges, offices) can hit the per-IP guest limit; limits are tunable.
+- Amends ADR-016 (V1 scope now includes multi-user auth) and CLAUDE.md §19 (GitHub OAuth permitted as identity provider only). Supersedes the "single-user, unauthenticated" assumption in the PRD and Sprint 7 design.
+
+**Alternatives considered**
+- Login-first: rejected — kills first-impression conversion.
+- Email + password: rejected — needs email infrastructure and verification; more liability, weaker for this audience.
+- Managed IdP (Clerk/Auth0/Firebase): rejected — new vendor (ADR-015) and less engineering depth, though valid in industry.
+- Client-side "1 repo" counter: rejected — trivially bypassed.
+
+**Implementation notes (built in Phases 2-3; where the code differs from the text above)**
+- The client IP is resolved with a configurable `trusted_proxy_hops` integer (0 = ignore `X-Forwarded-For`) rather than a boolean, because the correct hop count depends on how many proxies the host puts in front of the app and cannot be known until deploy time.
+- `staging` is held to the same startup rules as `production`; only `development` may run with the dev JWT secret or without bot protection. A blank `KEY=` copied from `.env.example` means "unset".
+- Extra machine-readable error codes were added: `TOKEN_REUSED`, `SERVICE_UNAVAILABLE`. A guest also has a daily cap on repository *attempts* (default 3), counted only after the request body validates.
+- A refresh token replayed within a 10-second grace window of its own rotation is rejected but does **not** revoke the family (two tabs racing); outside the window it revokes the family.
+- The short-lived access token is stored in `localStorage` alongside the refresh token (the draft said "in memory") so that several tabs share one session instead of each minting their own. This adds no exposure beyond the refresh token, which any XSS could already read; renewal runs under a Web Lock so two tabs never spend the same single-use refresh token.
+- The clone *timeout* is not part of this ADR's implementation; it moves with the clone into the indexer (ADR-028).
+- The public demo repository is owned by a system account whose login contains an underscore (`codesage_demo`), which is not a legal GitHub login character, so no real GitHub account can ever share it.
+
+---
+
+## ADR-028 — One Image, Two Roles, Postgres Job Queue for Hosted Indexing (Amends ADR-026)
+
+**Status:** Accepted. Approved by the project owner ("adrs approved", Phase 3).
+
+**Context**
+ADR-026 runs indexing in a Celery worker that shares a disk with the API and uses Redis as broker. On free hosts: workers sleep or do not exist as a free type (Render), a polling Celery worker would exhaust Upstash's free command quota, there is no shared disk across hosts, and `POST /repositories` currently clones **synchronously inside the API request** (blocking the event loop). Measured: the API needs ~200 MB and embedding pushes the process to ~500 MB, so API and heavy indexing cannot share one 512 MB host; on ~0.1–0.25 vCPU an indexing job would also starve the API. ADR-001 (modular monolith) stays valid — this extracts one compute-heavy role, justified by measurements, not microservices.
+
+**Decision**
+- **One codebase, one Docker image, three roles** via `ROLE`:
+  - `api` — all HTTP routers; never runs the indexing pipeline.
+  - `indexer` — minimal HTTP (`/health/live`, `/internal/wake`, `/internal/heartbeat`) plus the claim loop; runs clone → scan → parse → intelligence → knowledge.
+  - `all` — both in one process (default; local dev and single-container fallback).
+- **Dispatcher abstraction**: `INDEXING_BACKEND=celery|postgres`. `celery` keeps ADR-026 behaviour unchanged for local docker-compose. `postgres` is used in hosted mode.
+- **Postgres job queue** (`indexing_jobs`): `id`, `repository_id`, `kind` (`full_index` | `knowledge_reindex`), `status` (`queued|running|succeeded|failed|cancelled`), `attempts`, `max_attempts`, `claimed_by`, `lease_expires_at`, `heartbeat_at`, timestamps, `error`. A **partial unique index** allows at most one active (`queued|running`) job per repository, replacing the Redis lock's role in this mode. Claim = `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)` over `queued` jobs **or** `running` jobs whose lease expired. The worker extends its lease by heartbeat; retries up to the existing `celery_max_retries` equivalent.
+- **Clone moves to the indexer.** `POST /repositories` validates the URL and quota, inserts the repository (`status=cloning`) and a job, returns 201 immediately; the indexer clones, scans, and indexes. Status and progress remain on `repositories` exactly as today, so the frontend keeps polling the same fields (client handling verified at implementation).
+- **Wake and keep-alive**: after enqueue the API calls `POST {INDEXER_URL}/internal/wake` (short timeout, best effort). While a job is running, repository status polls trigger a rate-limited `/internal/heartbeat` so the indexer is not spun down mid-job. Internal endpoints require a constant-time-compared shared secret (`INTERNAL_API_TOKEN`). The indexer never polls while idle (protects Neon compute hours); a lost wake is harmless because jobs stay `queued` and are claimed on the next wake.
+- **Cancellation**: cooperative — the runner checks job status at stage boundaries (parse, intelligence, knowledge); finer granularity is out of scope.
+- **Resilience**: because hosts may restart at any time, leases expire and another claim resumes/re-runs the job (the pipeline is already content-hash incremental in the knowledge stage).
+
+**Rationale**
+- Separates CPU and memory budgets (API stays responsive; each role fits a 512 MB host) without distributed-system overhead: no new datastore, no broker, one image, one repo.
+- Postgres is already the system of record for job status; using it as the queue restores ADR-006's rule that Redis is never a broker in hosted mode.
+- Lease-based claiming is the standard answer to "workers can die" without needing exactly-once semantics.
+- Keeping Celery for compose preserves the demonstrated 1.9x multi-repo concurrency path for self-hosting.
+
+**Consequences / Trade-offs**
+- (+) Works on sleeping free hosts; restart-tolerant; fits memory budgets; fewer moving parts than Celery for hosted mode.
+- (+) Same image supports single-container fallback and VM/compose exit path.
+- (–) Two dispatch backends to test and maintain.
+- (–) Cooperative cancellation is coarser than Celery's SIGTERM revoke.
+- (–) `POST /repositories` changes from "returns ready after clone" to "returns cloning"; documented API behavior change.
+- (–) Throughput is bounded by the indexer host's CPU; concurrency across repos is 1 per indexer instance in free mode.
+- Amends ADR-026: Celery becomes one of two backends, not the only one. ADR-001 unchanged in spirit (still a modular monolith with one extracted worker role).
+
+---
+
+## ADR-029 — Cloudflare Workers AI as a Second Embedding Provider (Amends ADR-015)
+
+**Status:** Accepted. Approved by the project owner ("adrs approved", Phase 3).
+
+**Context**
+The local fastembed/ONNX model needs ~300 MB resident and ~500 MB while embedding, which cannot fit any free, card-free host (all ≤ 512 MB). `LLMSettings` already documents embedding as decoupled from the LLM provider ("swapping to a hosted embedding API later only means adding another branch in `knowledge/embedding.py`"). Cloudflare Workers AI hosts the **same model**, `@cf/baai/bge-small-en-v1.5` (384 dimensions), with a free allowance of 10,000 neurons/day (≈5.4 M input tokens/day by arithmetic from the published 1,841 neurons per million tokens) and states no card is needed. Figures to be verified at signup.
+
+**Decision**
+- Add provider `cloudflare` to `EMBEDDING_PROVIDER` (alongside `fastembed`, which stays the default for local/compose). Same 384-dim vectors, so the Qdrant collection schema is unchanged.
+- Calls: `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/baai/bge-small-en-v1.5` with `{"text": [...]}`, bearer API token; settings `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` (secret). Batch size capped at the documented limit (assumed 100 — to verify).
+- Resilience: bounded retries with backoff on 429/5xx; quota exhaustion maps to a retryable `EmbeddingQuotaExhaustedError` that fails the job with a clear user-facing message ("daily embedding budget reached, try again tomorrow"). Query-time embedding uses the same provider.
+- **No mixing**: `embedding_version` already encodes `provider:model:dimension`; switching provider changes it and forces the existing re-embed path. There is **no automatic fallback** between providers.
+- **Acceptance gate**: before ADR acceptance is finalised in practice, run `retrieval_eval` on the same corpus under both providers; accept only if Recall@K and MRR are not worse than −2 percentage points (tunable) — evidence for the README.
+
+**Rationale**
+- Same model, same dimension, same distance metric: retrieval parity is expected and measurable, avoiding a quality-vs-memory trade.
+- Moves ~300–500 MB of RAM and the ONNX warm-up cost out of both free hosts, making the API role feasible at ~200 MB.
+- The embedding abstraction was designed for exactly this swap.
+
+**Consequences / Trade-offs**
+- (+) Unblocks 512 MB hosting without changing models or Qdrant schema.
+- (+) Faster, more predictable embedding than a 0.1 CPU ONNX run.
+- (–) New external dependency and a daily quota: heavy indexing is capped; jobs may fail retryably when the budget is spent.
+- (–) Chunk text leaves our infrastructure (see ADR-030 for the privacy amendment).
+- (–) Tiny numeric differences versus the quantized local model are possible; a one-time re-embed is required when switching.
+- (–) Network latency on every query embedding (typically hundreds of ms).
+- Amends ADR-015: Cloudflare Workers AI is added as an approved embedding provider; the model stays BAAI/bge-small-en-v1.5.
+
+---
+
+## ADR-030 — Hosted Public-Demo Deployment Mode on Free Managed Services (Amends ADR-012, Refines ADR-006)
+
+**Status:** Accepted. Approved by the project owner ("adrs approved", Phase 3).
+
+**Context**
+ADR-012 states repository data stays on local/self-hosted storage and nothing is uploaded to a third-party cloud unless "a future, explicitly opted-in configuration enables it". The owner now wants a public, free, no-card deployment to showcase the product. That requires managed services for state and compute, and it sends repository-derived content to third parties (Cloudflare for embeddings, Groq for LLM context, Neon/Qdrant/Upstash for storage).
+
+**Decision**
+- Introduce an explicit **hosted demo mode** (`DEPLOYMENT_MODE=hosted`), opt-in, off by default. Local-first via docker-compose remains the default, documented, privacy-preserving path.
+- Hosted topology: Netlify (frontend), two Render Free web services (`ROLE=api`, `ROLE=indexer`), Neon (Postgres), Qdrant Cloud (Qdrant), Upstash (Redis: cache, locks, rate limits only), Cloudflare Workers AI (embeddings), Groq (LLM). The same three data-store *types* as ADR-006 — managed instances, no new store.
+- Hosted-mode restrictions: **public GitHub repositories only**; guest data auto-expires (ADR-027); a visible privacy notice stating exactly what is sent where (chunk text to Cloudflare, retrieved context to Groq) and what is stored; no secrets or `.env`-like files are ever indexed (existing ingestion exclusions apply).
+- Capacity and availability are documented as free-tier limits (Render 512 MB, sleeps after 15 min, may restart; Neon 0.5 GB; Upstash 256 MB / 500K commands per month; Qdrant 1 GB RAM with idle suspension; Cloudflare 10,000 neurons/day). This deployment is a demo, **not an SLA-backed production service**.
+- Exit path: the identical image runs `ROLE=all` + `INDEXING_BACKEND=celery` under docker-compose on any VM.
+- Operational settings required in hosted mode: `ENVIRONMENT=production`, `DEBUG=false`, `LOG_TO_FILE=false`, explicit `CORS_ORIGINS` and `ALLOWED_HOSTS`, Postgres SSL, Redis TLS, Qdrant URL + API key, a new (non-development) Groq key.
+
+**Rationale**
+- ADR-012's own wording anticipates an opt-in; this ADR makes the opt-in explicit, narrow, and visible to users instead of an implicit drift.
+- Honest documentation of limits is part of the portfolio story and prevents overclaiming.
+- Keeping the self-hosted path first-class preserves the privacy-first product principle.
+
+**Consequences / Trade-offs**
+- (+) Public demo possible at zero cost with no card.
+- (+) Privacy posture stays defensible: opt-in, public repos only, disclosed, expiring.
+- (–) Repository-derived text transits third-party services in hosted mode (contradicting ADR-012's default, by design and by opt-in).
+- (–) Free-tier sleep/restart and quota ceilings mean the experience is degraded vs. a paid deployment; documented.
+- (–) More configuration surface (`DEPLOYMENT_MODE`, `ROLE`, `INDEXING_BACKEND`, provider credentials) to document and test.
+- Amends ADR-012 (adds the explicit hosted opt-in). Refines ADR-006 (managed instances of the same stores; Redis stays cache/locks only in hosted mode — Celery on Redis is a local-mode detail per ADR-026/028).

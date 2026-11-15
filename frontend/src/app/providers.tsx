@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { OfflineBanner } from "@/components/state/StateVocabulary";
+import { AuthProvider } from "@/context/AuthContext";
 import { API_BASE_URL } from "@/lib/api/client";
 
 function makeQueryClient() {
@@ -69,7 +70,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <QueryClientProvider client={client}>
       <TooltipProvider>
         {!online && <OfflineBanner onRetry={retry} />}
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

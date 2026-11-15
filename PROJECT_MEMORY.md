@@ -3,7 +3,8 @@
 Purpose: a clean, durable briefing for any future session (human or AI) so work can resume with full context.
 Last updated: 2026-11-15. Maintain this file whenever a decision, status, or measured fact changes.
 Related: `CLAUDE.md` (engineering rules), `ARCHITECTURE_DECISIONS.md` (ADRs), `docs/SPRINT_LOG.md` (build progress),
-`docs/DEPLOYMENT_AND_AUTH_PLAN.md` (current plan), `docs/ADR_DRAFTS_027-030.md` (proposed ADRs awaiting approval).
+`docs/DEPLOYMENT_AND_AUTH_PLAN.md` (current plan). ADR-027..030 are **Accepted** and recorded in `ARCHITECTURE_DECISIONS.md`
+(the original drafts remain in `docs/ADR_DRAFTS_027-030.md`).
 
 ---
 
@@ -54,9 +55,9 @@ Related: `CLAUDE.md` (engineering rules), `ARCHITECTURE_DECISIONS.md` (ADRs), `d
 
 ## 4. Known gaps and risks in the code (verified by reading it)
 
-1. ~~No authentication~~ — **implemented in Phase 2 (branch `feat/auth-guest`, uncommitted)**, see section 10. Consequence: the Next.js
-   frontend and the Streamlit devtools send no tokens, so they get **401 on everything except `/health*` until Phase 3 / a devtools
-   update**. Rows created before accounts have `owner_id = NULL` and are invisible through the API (re-index them).
+1. ~~No authentication~~ — **implemented in Phases 2-3 (branch `feat/auth-guest`, uncommitted)**, see sections 10-11. The frontend, Streamlit
+   devtools and eval scripts now authenticate (guest session by default). Rows created before accounts have `owner_id = NULL` and are
+   invisible through the API (re-index them).
 2. **`POST /repositories` clones synchronously inside the API request** (GitPython, blocking the event loop) and runs the
    workspace scan in the API process; indexing (Celery) then reads that clone from disk, so API and worker must share a
    disk (docker-compose shares the `repository_storage` volume). Blocks any split-host deployment as-is.
@@ -149,6 +150,31 @@ Constraint: free + no card. **No card-free host offers more than 512 MB RAM.**
 - **Side effects on the local machine**: `PyJWT` added to `backend/requirements.txt`; the venv was synced to requirements (installed
   `pathspec`, `celery` which were missing). A scratch Postgres DB and Redis DB 15 used for testing were removed afterwards.
 - **Latent bug fixed on the way**: `remove_local_clone(Path(""))` would have `rmtree`'d the working directory.
+
+## 11. Phase 3 (auth frontend + demo) — what exists now (uncommitted on `feat/auth-guest`)
+
+- **Frontend session layer** (`frontend/src/lib/auth/`, `lib/api/{http,client,auth}.ts`): first visit creates a guest automatically; tokens persist
+  in `localStorage` (shared across tabs); renewal is single-flight, runs under a Web Lock, and re-reads storage inside it; a 401 renews once and
+  retries once; a *network* failure never downgrades a signed-in user to a guest (only a definitive 401 from refresh does).
+  `ApiError.code` exposes backend codes; `GUEST_QUOTA_EXCEEDED` raises the sign-in dialog from anywhere via `authEvents`.
+- **UI**: `AuthProvider`/`useAuth`, `SignInModal`, `GuestBanner` (remaining repo/questions), `UserMenu` in `TopBar`, `/auth/callback` page
+  (single-use code guard, replay guard, open-redirect-safe return path), landing page with the guest-locked form state, a **demo card** with
+  question chips, demo repos hidden from the personal list, and read-only demo behaviour on the settings page.
+- **Demo repo**: `python -m scripts.seed_demo_repo` (from `backend/`) clones, scans and indexes it in-process under the system account
+  `codesage_demo`; idempotent, `--force` rebuilds, default is `expressjs/express`. **Not yet run against your dev DB** (dev DB has 0 users,
+  0 demo repos) — run it yourself when you want the demo locally. Question chips are Express-specific only when the demo *is* Express.
+- **Devtools** (`devtools/services/api_client.py`) auto-creates/renews a guest session. A guest is limited; raise `GUEST_MAX_REPOSITORIES`,
+  `GUEST_DAILY_QUESTIONS`, `GUEST_CREATIONS_PER_IP_PER_DAY` in the backend `.env` for dev. The devtools *Logs* page needs an admin (403 for a guest).
+- **Eval scripts** (`backend/scripts/{retrieval,ai,reports}_eval.py`) use `scripts/_auth.py`: `CODESAGE_ACCESS_TOKEN` for your own repos, otherwise a
+  throwaway guest (can read only the demo; daily question cap applies).
+- **Verified**: 62 frontend tests (19+12 new) pass, typecheck + lint + production build pass; real-browser check (headless Edge) against a
+  scratch backend: a first-time visitor sees the guest banner, Sign-in button, demo card; 3 page loads created exactly 1 guest; callback error
+  paths (forged state / cancelled / no code) render correctly; guest can read+retrieve over the demo, every write returns `FORBIDDEN`, and the demo
+  does not consume the guest's free repository. All scratch data (DB, Redis db, Qdrant vectors, temp files) was removed afterwards.
+- **Not verified (needs real credentials)**: the actual GitHub redirect/consent round-trip and the Turnstile widget. Both are tested only with mocks
+  until you create the GitHub OAuth app and Turnstile keys.
+- **Known gaps**: backend `/ask` still returns one JSON response (frontend simulates streaming, unchanged); `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and a
+  production `NEXT_PUBLIC_API_BASE_URL` must be set at build time; `frontend/.env.example` documents both.
 
 ## 9. Open items / unverified assumptions
 

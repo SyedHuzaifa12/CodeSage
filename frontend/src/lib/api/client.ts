@@ -1,106 +1,40 @@
-import type { ApiEnvelope, ErrorDetail } from "@/lib/types/envelope";
+import { ensureSession, renewSession } from "@/lib/auth/authFlow";
+import { authEvents } from "@/lib/auth/events";
+import { ApiError, sendRequest, type RequestOptions } from "@/lib/api/http";
 
-/**
- * The single public env var this app reads. Never a secret — the FastAPI
- * backend (with its Groq/DB/Redis/Qdrant credentials) stays off Vercel
- * entirely (Design System §14.4).
- */
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "") ?? "http://localhost:8000";
+export { API_BASE_URL, API_V1_PREFIX, ApiError } from "@/lib/api/http";
+export type { RequestOptions } from "@/lib/api/http";
 
-export const API_V1_PREFIX = "/api/v1";
+async function authorized<T>(path: string, options: RequestOptions): Promise<T> {
+  if (options.auth === false) return sendRequest<T>(path, options);
 
-/** Thrown for both HTTP-level failures and network/timeout failures. */
-export class ApiError extends Error {
-  readonly status: number;
-  readonly errors: ErrorDetail[];
-  readonly kind: "http" | "network" | "timeout";
-
-  constructor(message: string, opts: { status?: number; errors?: ErrorDetail[]; kind?: ApiError["kind"] } = {}) {
-    super(message);
-    this.name = "ApiError";
-    this.status = opts.status ?? 0;
-    this.errors = opts.errors ?? [];
-    this.kind = opts.kind ?? "http";
+  const session = await ensureSession();
+  try {
+    return await sendRequest<T>(path, options, session.accessToken);
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.status !== 401) throw err;
+    // The server rejected our token (expired early, account gone, ...): renew once and retry once.
+    const renewed = await renewSession(session.accessToken);
+    return sendRequest<T>(path, options, renewed.accessToken);
   }
 }
 
-export interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
-  body?: unknown;
-  query?: Record<string, string | number | boolean | undefined | null>;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
-function buildUrl(path: string, query?: RequestOptions["query"]): string {
-  const url = new URL(`${API_BASE_URL}${API_V1_PREFIX}${path}`);
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined && value !== null && value !== "") {
-        url.searchParams.set(key, String(value));
-      }
-    }
-  }
-  return url.toString();
-}
-
 /**
- * Typed fetch wrapper that unwraps the backend's {success,message,data}
- * envelope and throws a normalized ApiError for every other case
- * (network failure, timeout, or the {success:false,message,errors} shape).
+ * Typed fetch wrapper for the CodeSage API. Attaches the caller's session —
+ * creating a guest session on first use and renewing it as needed — unwraps
+ * the {success,message,data} envelope, and throws a normalized ApiError for
+ * everything else. A guest hitting a limit that signing in lifts also
+ * notifies the UI so it can offer the sign-in prompt.
  */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, query, signal, timeoutMs = 30_000 } = options;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  if (signal) {
-    signal.addEventListener("abort", () => controller.abort());
-  }
-
-  let response: Response;
   try {
-    response = await fetch(buildUrl(path, query), {
-      method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-      cache: "no-store",
-    });
+    return await authorized<T>(path, options);
   } catch (err) {
-    clearTimeout(timeout);
-    if ((err as Error).name === "AbortError") {
-      throw new ApiError("The request timed out or was cancelled.", { kind: "timeout" });
+    if (err instanceof ApiError && err.code === "GUEST_QUOTA_EXCEEDED") {
+      authEvents.emitQuotaExceeded(err.message);
     }
-    throw new ApiError("Couldn't reach the CodeSage backend. Check your connection and try again.", {
-      kind: "network",
-    });
+    throw err;
   }
-  clearTimeout(timeout);
-
-  let json: ApiEnvelope<T> | undefined;
-  try {
-    json = (await response.json()) as ApiEnvelope<T>;
-  } catch {
-    if (!response.ok) {
-      throw new ApiError(`Request failed with status ${response.status}.`, {
-        status: response.status,
-        kind: "http",
-      });
-    }
-    throw new ApiError("The server returned an unexpected response.", { kind: "http", status: response.status });
-  }
-
-  if (!json.success) {
-    throw new ApiError(json.message || "The request failed.", {
-      status: response.status,
-      errors: json.errors ?? [],
-      kind: "http",
-    });
-  }
-
-  return json.data;
 }
 
 export const api = {

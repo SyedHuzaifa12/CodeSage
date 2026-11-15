@@ -16,6 +16,8 @@ export interface Repository {
   indexing_status: IndexingStatus;
   indexing_progress: number;
   error_message: string | null;
+  /** A shared, read-only showcase repository (only an admin may modify it). */
+  is_demo: boolean;
   created_at: string;
   updated_at: string;
 }

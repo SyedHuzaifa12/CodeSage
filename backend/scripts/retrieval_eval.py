@@ -41,6 +41,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from _auth import authorized_client
+
 
 @dataclass
 class EvalQuestion:
@@ -133,7 +135,7 @@ def run_eval(
     """
     print(f"\n=== {label} ===")
     results = []
-    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+    with authorized_client(base_url, 60.0) as client:
         for question in fixture:
             result = run_question(client, repository_id, question, rerank)
             results.append(result)

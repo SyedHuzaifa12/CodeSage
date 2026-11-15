@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiRequest, ApiError } from "@/lib/api/client";
+import { resetSessionCacheForTests, setSession } from "@/lib/auth/session";
 
 function mockFetchOnce(body: unknown, init: { ok?: boolean; status?: number } = {}) {
   const ok = init.ok ?? true;
@@ -15,6 +16,14 @@ function mockFetchOnce(body: unknown, init: { ok?: boolean; status?: number } = 
 }
 
 describe("apiRequest — envelope handling", () => {
+  // Every request now carries a session; start each test signed in so these tests exercise envelope handling only
+  // (session creation/renewal is covered in session.test.ts).
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetSessionCacheForTests();
+    setSession({ accessToken: "access-token", accessExpiresAt: Date.now() + 3_600_000, refreshToken: "refresh-token" });
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });

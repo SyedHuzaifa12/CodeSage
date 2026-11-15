@@ -10,6 +10,8 @@ export interface SuccessEnvelope<T> {
 }
 
 export interface ErrorDetail {
+  /** Stable machine-readable code (e.g. `GUEST_QUOTA_EXCEEDED`) on auth/quota errors. */
+  code?: string;
   field?: string;
   message?: string;
   type?: string;

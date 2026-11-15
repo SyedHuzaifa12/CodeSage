@@ -6,6 +6,8 @@ path is duplicated across pages.
 """
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -25,8 +27,21 @@ class ApiResult:
     status_code: Optional[int] = None
 
 
+_RENEW_SKEW_SECONDS = 30
+
+
 class ApiClient:
-    """Wraps every backend endpoint the DevTools console needs."""
+    """Wraps every backend endpoint the DevTools console needs.
+
+    Every API route now requires a bearer token (ADR-027). The console
+    transparently creates a *guest* session on first use and renews it, so
+    no page needs to know about auth. A guest is limited (one repository,
+    a daily question cap); to lift that while developing, raise
+    ``GUEST_MAX_REPOSITORIES`` / ``GUEST_DAILY_QUESTIONS`` /
+    ``GUEST_CREATIONS_PER_IP_PER_DAY`` in the backend's ``.env``. The
+    backend skips its bot check outside production, so no Turnstile token
+    is needed here.
+    """
 
     def __init__(self, base_url: str = BACKEND_API_URL) -> None:
         """Initialize the client.
@@ -36,9 +51,13 @@ class ApiClient:
         """
         self._base_url = base_url.rstrip("/")
         self._session = requests.Session()
+        self._auth_lock = threading.Lock()
+        self._access_token: Optional[str] = None
+        self._refresh_token: Optional[str] = None
+        self._access_expires_at = 0.0
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> ApiResult:
-        """Perform a request and unwrap the standard response envelope.
+    def _send(self, method: str, path: str, **kwargs: Any) -> ApiResult:
+        """Perform one raw request and unwrap the standard response envelope (no auth handling).
 
         Args:
             method: HTTP method (GET/POST/PATCH/DELETE).
@@ -68,11 +87,65 @@ class ApiClient:
             status_code=response.status_code,
         )
 
+    def _store_session(self, data: dict[str, Any]) -> None:
+        tokens = data["tokens"]
+        self._access_token = tokens["access_token"]
+        self._refresh_token = tokens["refresh_token"]
+        self._access_expires_at = time.time() + float(tokens["expires_in"])
+
+    def _renew_session(self) -> Optional[str]:
+        """Refresh the session, or create a guest one if there is none / it was rejected.
+
+        Returns:
+            ``None`` on success, otherwise a human-readable reason.
+        """
+        with self._auth_lock:
+            if self._refresh_token:
+                refreshed = self._send("POST", "/api/v1/auth/refresh", json={"refresh_token": self._refresh_token})
+                if refreshed.success:
+                    self._store_session(refreshed.data)
+                    return None
+            created = self._send("POST", "/api/v1/auth/guest", json={})
+            if created.success:
+                self._store_session(created.data)
+                return None
+            self._access_token = self._refresh_token = None
+            return created.message
+
+    def _request(self, method: str, path: str, *, auth: bool = True, **kwargs: Any) -> ApiResult:
+        """Perform an authenticated request, creating/renewing the session as needed.
+
+        Args:
+            method: HTTP method (GET/POST/PATCH/DELETE).
+            path: Path appended to the base URL.
+            auth: Set False for public endpoints (health) so no session is created for them.
+            **kwargs: Passed through to ``requests``.
+
+        Returns:
+            An :class:`ApiResult` (see :meth:`_send`).
+        """
+        if not auth:
+            return self._send(method, path, **kwargs)
+
+        if not self._access_token or time.time() > self._access_expires_at - _RENEW_SKEW_SECONDS:
+            problem = self._renew_session()
+            if problem:
+                return ApiResult(success=False, message=f"Could not start a backend session: {problem}")
+
+        result = self._send(method, path, headers={"Authorization": f"Bearer {self._access_token}"}, **kwargs)
+        if result.status_code == 401:
+            # The server rejected our token: renew once and retry once.
+            problem = self._renew_session()
+            if problem:
+                return ApiResult(success=False, message=f"Could not renew the backend session: {problem}")
+            result = self._send(method, path, headers={"Authorization": f"Bearer {self._access_token}"}, **kwargs)
+        return result
+
     # ---- Health ----
 
     def get_health(self) -> ApiResult:
-        """Fetch full backend/dependency health status."""
-        return self._request("GET", "/health")
+        """Fetch full backend/dependency health status (public — needs no session)."""
+        return self._request("GET", "/health", auth=False)
 
     # ---- Repositories ----
 

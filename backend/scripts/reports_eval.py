@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from _auth import authorized_client
+
 
 @dataclass
 class ReportEvalCase:
@@ -131,7 +133,7 @@ def run_eval(base_url: str, repository_id: str, fixture: list[ReportEvalCase]) -
         Per-case results.
     """
     results = []
-    with httpx.Client(base_url=base_url, timeout=120.0) as client:
+    with authorized_client(base_url, 120.0) as client:
         for case in fixture:
             result = run_case(client, repository_id, case, force_regenerate=True)
             results.append(result)
@@ -167,7 +169,7 @@ def measure_cache_latency(base_url: str, repository_id: str, report_type: str) -
     Returns:
         ``(cold_ms, warm_ms)``.
     """
-    with httpx.Client(base_url=base_url, timeout=120.0) as client:
+    with authorized_client(base_url, 120.0) as client:
         cold_started = time.perf_counter()
         client.post(f"/api/v1/repositories/{repository_id}/reports/{report_type}", json={"force_regenerate": True})
         cold_ms = (time.perf_counter() - cold_started) * 1000

@@ -1,9 +1,11 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 import { aiApi } from "@/lib/api/ai";
 import { createSyntheticAnswerStream, type AnswerStream } from "@/lib/answerStream";
 import { askSession, type AskTurn } from "@/lib/askSession";
+import { queryKeys } from "@/lib/query/keys";
 import type { AskOptions } from "@/lib/types/ai";
 
 export type { AskTurn } from "@/lib/askSession";
@@ -22,6 +24,7 @@ function prefersReducedMotion(): boolean {
  * component that renders `turns`.
  */
 export function useAskStream(repositoryId: string) {
+  const client = useQueryClient();
   const turns = useSyncExternalStore(
     askSession.subscribe,
     () => askSession.get(repositoryId),
@@ -64,11 +67,14 @@ export function useAskStream(repositoryId: string) {
           onDone: (full) => {
             activeStreams.delete(id);
             update({ status: "done", stage: 4, response: full, partial: full.answer });
+            // Each answer spends one of the day's questions; keep the guest banner honest.
+            void client.invalidateQueries({ queryKey: queryKeys.me() });
           },
           onError: (err) => {
             timers.forEach(clearTimeout);
             activeStreams.delete(id);
             update({ status: "error", error: err });
+            void client.invalidateQueries({ queryKey: queryKeys.me() });
           },
         },
         { msPerToken: reduced ? 0 : 16, wordsPerToken: 2 },
@@ -77,7 +83,7 @@ export function useAskStream(repositoryId: string) {
       void stream.start();
       return id;
     },
-    [repositoryId],
+    [repositoryId, client],
   );
 
   const cancel = useCallback((id: string) => {
