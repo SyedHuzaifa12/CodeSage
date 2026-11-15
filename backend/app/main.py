@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.lifespan import lifespan
 from app.core.logging import configure_logging
 from app.exceptions.handlers import register_exception_handlers
+from app.indexing.api import router as indexing_internal_router
 from app.ingestion.api import router as ingestion_router
 from app.ingestion.exceptions import register_ingestion_exception_handlers
 from app.knowledge.api import router as knowledge_router
@@ -50,13 +51,22 @@ register_ai_exception_handlers(app)
 register_reports_exception_handlers(app)
 register_auth_exception_handlers(app)
 
+# What this process serves depends on its role (ADR-028). The indexer exposes only health and the
+# internal wake/heartbeat endpoints: it has no user-facing surface, so nothing there needs auth,
+# CORS or quotas, and a smaller router set also means a smaller import and memory footprint.
+role = settings.app.role
+prefix = settings.app.api_v1_prefix
+
 app.include_router(health_router)
-app.include_router(auth_router, prefix=settings.app.api_v1_prefix)
-app.include_router(auth_internal_router, prefix=settings.app.api_v1_prefix)
-app.include_router(repository_router, prefix=settings.app.api_v1_prefix)
-app.include_router(ingestion_router, prefix=settings.app.api_v1_prefix)
-app.include_router(knowledge_router, prefix=settings.app.api_v1_prefix)
-app.include_router(retrieval_router, prefix=settings.app.api_v1_prefix)
-app.include_router(ai_router, prefix=settings.app.api_v1_prefix)
-app.include_router(reports_router, prefix=settings.app.api_v1_prefix)
-app.include_router(logs_router, prefix=settings.app.api_v1_prefix)
+if role in ("api", "all"):
+    app.include_router(auth_router, prefix=prefix)
+    app.include_router(auth_internal_router, prefix=prefix)
+    app.include_router(repository_router, prefix=prefix)
+    app.include_router(ingestion_router, prefix=prefix)
+    app.include_router(knowledge_router, prefix=prefix)
+    app.include_router(retrieval_router, prefix=prefix)
+    app.include_router(ai_router, prefix=prefix)
+    app.include_router(reports_router, prefix=prefix)
+    app.include_router(logs_router, prefix=prefix)
+if role in ("indexer", "all"):
+    app.include_router(indexing_internal_router, prefix=prefix)

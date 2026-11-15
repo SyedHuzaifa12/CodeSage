@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_accessible_repository, require_repository_write
 from app.db.postgres import get_db
+from app.indexing.notify import is_postgres_backend, wake_indexer
 from app.ingestion.intelligence_service import RepositoryIntelligenceService
 from app.ingestion.schemas import (
     CallGraphData,
@@ -132,6 +133,7 @@ async def reset_workspace(
 )
 async def trigger_indexing(
     repository_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     service: WorkspaceService = Depends(get_workspace_service),
 ) -> SuccessResponse[IndexTriggerResponse]:
     """Validate a repository and dispatch Tree-sitter parsing as a Celery task (ADR-026).
@@ -153,6 +155,8 @@ async def trigger_indexing(
         poll ``GET /repositories/{id}`` for ``indexing_status``/``indexing_progress``.
     """
     workspace = await service.request_indexing(repository_id)
+    if is_postgres_backend():
+        background_tasks.add_task(wake_indexer)  # after the job row is committed (request_indexing commits)
     data = IndexTriggerResponse(
         repository_id=repository_id,
         workspace_status=workspace.status,

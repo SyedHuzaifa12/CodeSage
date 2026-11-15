@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import (
@@ -15,6 +15,8 @@ from app.auth.dependencies import (
 )
 from app.core.config import Settings, get_settings
 from app.db.postgres import get_db
+from app.indexing.notify import is_postgres_backend, ping_indexer_if_due, wake_indexer
+from app.indexing.service import enqueue_job
 from app.ingestion.service import WorkspaceService, get_workspace_service
 from app.models.repository import Repository
 from app.models.user import User
@@ -52,20 +54,39 @@ def get_repository_service(
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[RepositoryResponse])
 async def create_repository(
     payload: RepositoryCreateRequest,
+    background_tasks: BackgroundTasks,
     service: RepositoryService = Depends(get_repository_service),
     guard: RepositoryCreationGuard = Depends(get_repository_creation_guard),
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse[RepositoryResponse]:
-    """Register and clone a new repository for the signed-in user (or guest).
+    """Register a new repository for the signed-in user (or guest).
+
+    With ``INDEXING_BACKEND=celery`` the repository is cloned before this returns (``ready``).
+    With ``postgres`` (hosted mode, ADR-028) this returns at once with status ``cloning``; the
+    indexer role clones it and then indexes it, and clients poll ``GET /repositories/{id}``.
 
     Args:
         payload: The GitHub URL (and optional display name) to import.
+        background_tasks: Used to wake the indexer once the job is committed.
         service: Injected repository service.
         guard: Enforces repository quotas and supplies clone size limits.
+        session: The request's database session (the same one ``service`` uses).
+        settings: Application settings.
 
     Returns:
         The created repository.
     """
     limits = await guard.authorize()
+    if is_postgres_backend(settings):
+        repository = await service.register_repository(payload, guard.user.id)
+        await enqueue_job(
+            session, repository.id, "full_index", max_files=limits.max_files, max_bytes=limits.max_bytes,
+            settings=settings,
+        )
+        await session.commit()  # the indexer reads these rows from another process: commit before waking it
+        background_tasks.add_task(wake_indexer, settings)
+        return SuccessResponse(message="Repository registered; cloning and indexing will start shortly.", data=repository)
     repository = await service.create_repository(payload, guard.user.id, limits.max_files, limits.max_bytes)
     return SuccessResponse(message="Repository imported.", data=repository)
 
@@ -91,16 +112,27 @@ async def list_repositories(
 
 @router.get("/{repository_id}", response_model=SuccessResponse[RepositoryResponse])
 async def get_repository(
+    background_tasks: BackgroundTasks,
     repository: Repository = Depends(get_accessible_repository),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse[RepositoryResponse]:
     """Fetch a single repository the caller may access.
 
+    While the repository is being cloned or indexed in queue mode, this poll also sends the
+    indexer a rate-limited keep-alive: the inbound request stops a free host spinning down
+    mid-job, and doubles as a retry for a wake that was lost while the host was still booting.
+
     Args:
+        background_tasks: Used to send the keep-alive after the response.
         repository: The repository, already loaded and access-checked (404 if not the caller's).
+        settings: Application settings.
 
     Returns:
         The matching repository.
     """
+    active = repository.status in ("pending", "cloning") or repository.indexing_status == "indexing"
+    if active and is_postgres_backend(settings):
+        background_tasks.add_task(ping_indexer_if_due, settings)
     return SuccessResponse(message="Repository retrieved.", data=repository)
 
 

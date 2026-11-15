@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.db.postgres import check_postgres_connection, close_postgres_connection, verify_schema_initialized
 from app.db.qdrant import check_qdrant_connection, close_qdrant_connection, get_qdrant_client
 from app.db.redis import check_redis_connection, close_redis_connection
+from app.indexing.registry import set_runner
 from app.exceptions.base import (
     CacheConnectionError,
     ConfigurationError,
@@ -73,9 +74,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await ensure_collection(get_qdrant_client())
     logger.info("Qdrant 'repository_chunks' collection verified")
 
+    settings = get_settings()
+    runner = None
+    if settings.app.role in ("indexer", "all") and settings.indexing.indexing_backend == "postgres":
+        # Imported here: the runner pulls in the whole indexing pipeline, which an API-only process never needs.
+        from app.indexing.runner import IndexingRunner
+
+        runner = IndexingRunner(settings)
+        set_runner(runner)
+        runner.start()
+    logger.info("Role '%s' ready (indexing backend: %s)", settings.app.role, settings.indexing.indexing_backend)
+
     yield
 
     logger.info("Shutting down CodeSage backend")
+    if runner is not None:
+        await runner.stop()
+        set_runner(None)
     await close_postgres_connection()
     await close_redis_connection()
     await close_qdrant_connection()

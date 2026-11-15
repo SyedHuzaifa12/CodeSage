@@ -192,9 +192,22 @@ Constraint: free + no card. **No card-free host offers more than 512 MB RAM.**
 - **Not verified**: the quota-exhausted response shape; Cloudflare account has not been checked for a card/billing prompt beyond signup (owner reported it worked).
 - Remaining local `/ask` path unchanged. Reranker is disabled by default (it would load another ONNX model - check in Phase 5 RSS gate).
 
+## 13. Phase 5 (role split + Postgres job queue) — what exists now (uncommitted on `feat/auth-guest`)
+
+- **Roles**: `ROLE=api|indexer|all` (default `all`). `api` mounts every user router and never indexes; `indexer` mounts only `/health/*` and `/api/v1/internal/{wake,heartbeat}` and runs the claim loop; `all` is both.
+  `INDEXING_BACKEND=celery` (default; ADR-026, local compose, unchanged) or `postgres` (hosted). Config: `IndexingSettings` (`INDEXER_URL`, lease/heartbeat/attempts/backoff) in `core/config.py`; `production_problems()` rejects `ROLE=api`+postgres without `INDEXER_URL` and `ROLE=indexer` without postgres.
+- **Queue**: table `indexing_jobs` (migration `a7c2e9b4d1f6`, additive), partial unique index = one active job per repository. Code in `backend/app/indexing/`: `repository.py` (SQL: claim with `FOR UPDATE SKIP LOCKED`, lease renew, finish/requeue/cancel/reap, next-wake), `runner.py` (`IndexingRunner`: wake-driven loop, no idle polling, lease keeper, retries, stage-boundary cancel, release on shutdown), `notify.py` (wake + rate-limited keep-alive), `service.py` (enqueue/cancel helpers), `api.py` (internal endpoints), `registry.py` (this process's runner).
+- **Flow in postgres mode**: `POST /repositories` registers the repo (`cloning`) + enqueues a `full_index` job, commits, wakes the indexer, returns 201 at once; the indexer clones (guest size caps carried on the job), scans, then parses/analyses/embeds automatically. `/index`, `/knowledge/reindex`, cancel and delete also go through the queue. Clone logic was split into `RepositoryService.register_repository` + `clone_and_scan` (blocking parts run in threads).
+- **Changed behaviour**: pipeline `run_parsing_pipeline(repository_id, before_stage=None)` now returns a failure message; a failed knowledge stage marks the repo `failed` (also in celery mode). Guest oversize now fails asynchronously (no inline 413) in postgres mode.
+- **Gotcha found by testing**: the pipeline holds the repository row lock until its single commit, so any other writer to that row (cancel, rename, delete) blocks until the end of the run. Cancel uses a job-first commit + 1.5 s lock timeout. Rename/delete during indexing still wait (pre-existing).
+- **Memory gate passed**: API import 215 MB (169 MB without `fastembed`, which `qdrant_client` imports eagerly if installed) on Linux/Python 3.12; ~230-250 MB running on Windows. Phase 6: hosted image should not install `fastembed`.
+- **Verified**: 97 new tests (queue 23 on real Postgres incl. concurrent claims and a real row-lock cancel; runner 22; dispatch/roles/config 37; pipeline hooks + clone 15) -> backend suite **494 passed, 1 skipped**. Real two-process run (api + indexer): create returns in ~100 ms, cloning->indexing->indexed in ~15 s, duplicate trigger 409, Recall@K 1.000, cancel sticks, hard-killed indexer's job retaken after the lease lapses (attempt 2), oversized guest repo fails cleanly. All scratch data removed (DB, Redis db 14, Qdrant vectors, temp dirs).
+- **Owner action**: your dev DB is at `f5a1c3d9b7e2`; run `cd backend && alembic upgrade head` (the app refuses to start until every model table exists).
+- **Not done / limits**: indexer concurrency is 1 job per instance; no intermediate progress (single commit, unchanged); the frontend still says "Start indexing" copy in places and its 413 handling only applies to celery mode; Dockerfile/render.yaml/CORS are Phase 6.
+
 ## 9. Open items / unverified assumptions
 
-- Render API fits in 512 MB without the local model (estimated ~200 MB — must measure).
+- Render API fits in 512 MB: measured 169-215 MB at import (Linux), ~250 MB peak running — re-confirm on Render in Phase 7.
 - Indexing speed at ~0.1–0.25 vCPU; guest repo size caps needed.
 - Cloudflare Workers AI: ~~batch limit, retrieval parity~~ measured in Phase 4 (see s12); still unverified: the exact quota-exhausted response.
 - Whether Upstash supports what the Celery config assumes (moot in hosted mode — no Celery there).

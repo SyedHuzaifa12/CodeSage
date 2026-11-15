@@ -43,6 +43,10 @@ class AppSettings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     allowed_hosts: str = "*"
     repository_storage_path: str = "data/repositories"
+    # Which part of the app this process runs (ADR-028): "api" serves HTTP and
+    # never indexes; "indexer" only runs the job-claim loop plus internal
+    # endpoints; "all" is both in one process (local dev / single-container).
+    role: Literal["api", "indexer", "all"] = "all"
 
     @property
     def cors_origins_list(self) -> list[str]:
@@ -136,6 +140,39 @@ class CelerySettings(BaseSettings):
     # ``celery_task_time_limit_seconds`` so a legitimately long-running
     # task is never undercut by its own lock expiring.
     indexing_lock_ttl_seconds: int = 2400
+
+
+class IndexingSettings(BaseSettings):
+    """How indexing work is dispatched and executed (ADR-028).
+
+    ``celery`` keeps the ADR-026 behaviour (local docker-compose). ``postgres``
+    uses the ``indexing_jobs`` table as the queue — no broker — which is what
+    the hosted free-tier deployment runs.
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    indexing_backend: Literal["celery", "postgres"] = "celery"
+    # Base URL of the indexer service (e.g. https://codesage-indexer.onrender.com), used by the
+    # API role to wake it. Unused when both roles share a process.
+    indexer_url: Optional[str] = None
+    # A running job must renew its lease at least this often or another worker may take it over.
+    indexing_lease_seconds: int = 120
+    indexing_heartbeat_seconds: int = 30
+    indexing_max_attempts: int = 3  # first try + 2 retries, matching celery_max_retries
+    indexing_retry_backoff_seconds: int = 10
+    # The wake call runs in the background, and a sleeping free host can take ~1 minute to boot.
+    indexer_wake_timeout_seconds: float = 90.0
+    # API -> indexer keep-alive pings while a job is active are sent at most this often.
+    indexer_ping_min_interval_seconds: int = 30
+
+    @field_validator("indexer_url", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``INDEXER_URL=`` as unset and drop a trailing slash."""
+        if isinstance(value, str):
+            return value.strip().rstrip("/") or None
+        return value
 
 
 class QdrantSettings(BaseSettings):
@@ -544,6 +581,7 @@ class Settings:
         self.reports = ReportSettings()
         self.ingestion = IngestionSettings()
         self.celery = CelerySettings()
+        self.indexing = IndexingSettings()
         self.auth = AuthSettings()
 
     def production_problems(self) -> list[str]:
@@ -571,6 +609,10 @@ class Settings:
             problems.append("INTERNAL_API_TOKEN is required for the guest-cleanup endpoint.")
         if self.app.debug:
             problems.append("DEBUG must be false in production.")
+        if self.indexing.indexing_backend == "postgres" and self.app.role == "api" and not self.indexing.indexer_url:
+            problems.append("INDEXER_URL is required for ROLE=api with INDEXING_BACKEND=postgres (the API must be able to wake the indexer).")
+        if self.app.role == "indexer" and self.indexing.indexing_backend != "postgres":
+            problems.append("ROLE=indexer requires INDEXING_BACKEND=postgres.")
         if self.llm.embedding_provider == "cloudflare" and (
             not self.llm.cloudflare_account_id or self.llm.cloudflare_api_token is None
         ):

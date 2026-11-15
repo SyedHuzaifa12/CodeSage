@@ -7,6 +7,7 @@ both rely on to know the full set of expected tables.
 from app.models.base import Base
 from app.models.conversation import Conversation
 from app.models.file import File
+from app.models.indexing_job import IndexingJob
 from app.models.knowledge_chunk import KnowledgeChunk
 from app.models.knowledge_index_state import KnowledgeIndexState
 from app.models.relationship import Relationship
@@ -26,6 +27,7 @@ __all__ = [
     "RepositoryWorkspace",
     "RepositoryIntelligence",
     "File",
+    "IndexingJob",
     "Symbol",
     "Relationship",
     "Report",
