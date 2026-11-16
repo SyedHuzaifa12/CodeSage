@@ -153,6 +153,12 @@ class TestNetlifyConfig:
         scripts = json.loads((REPO / build["base"] / "package.json").read_text(encoding="utf-8"))["scripts"]
         assert script in scripts
 
+    def test_the_nextjs_runtime_is_switched_on_not_left_to_auto_detection(self, config):
+        # Regression: without publish=".next" Netlify deployed the raw "frontend" folder, skipped the Next.js
+        # runtime, and the live site was a blank 404 although the build succeeded.
+        assert config["build"]["publish"] == ".next"
+        assert {"package": "@netlify/plugin-nextjs"} in config["plugins"]
+
     def test_the_build_is_skipped_for_commits_that_do_not_touch_the_frontend(self, config):
         ignore = config["build"]["ignore"]
         assert "git diff --quiet" in ignore and "$CACHED_COMMIT_REF" in ignore and "../netlify.toml" in ignore
