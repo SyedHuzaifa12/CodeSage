@@ -332,6 +332,27 @@ class TestProductionGuards:
         assert any("REDIS_HOST" in p for p in problems)
         assert not any(bad_host.strip() and bad_host in p for p in problems)  # never leaks a pasted secret
 
+    @pytest.mark.parametrize(
+        ("bad_host", "expected_in_message"),
+        [
+            ("rediss://default:" + "A" * 60 + "@humble-fox-12345.upstash.io:6379", "scheme"),
+            ("rediss://default:" + "A" * 60 + "@humble-fox-12345.upstash.io:6379", "full connection URL"),
+            ("A" * 72, "72 characters long"),
+            ("humble-fox-12345.upstash.io:6379", "port"),
+            ("humble..upstash.io", "empty part"),
+        ],
+    )
+    def test_the_error_says_what_is_wrong_with_the_value_without_printing_it(self, monkeypatch, bad_host, expected_in_message):
+        settings = self._healthy_hosted(monkeypatch)
+        monkeypatch.setattr(settings.redis, "redis_host", bad_host)
+        message = " ".join(p for p in settings.production_problems() if "REDIS_HOST" in p)
+        assert expected_in_message in message
+        assert bad_host not in message and ("A" * 20) not in message
+
+    def test_stray_whitespace_and_quotes_around_a_pasted_host_are_trimmed(self):
+        for pasted in (" humble-fox-12345.upstash.io\n", '"humble-fox-12345.upstash.io"', "'humble-fox-12345.upstash.io' "):
+            assert RedisSettings(redis_host=pasted).redis_host == "humble-fox-12345.upstash.io"
+
     @pytest.mark.parametrize("good_host", ["humble-fox-12345.upstash.io", "redis", "localhost", "10.0.0.5"])
     def test_ordinary_redis_hosts_are_accepted(self, monkeypatch, good_host):
         settings = self._healthy_hosted(monkeypatch)
