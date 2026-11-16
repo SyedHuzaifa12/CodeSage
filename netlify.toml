@@ -9,10 +9,18 @@
 [build]
   base = "frontend"
   command = "npm run build"
+  # Relative to `base`. Without this Netlify treated the folder itself ("frontend") as a static publish directory,
+  # which switches the Next.js runtime off: the build succeeds and the site serves a blank 404.
+  publish = ".next"
   # Build only when the frontend (or this file) changed. A Netlify production deploy costs 15 of the free plan's 300
   # monthly credits, so a backend-only commit must not spend one. Exit 0 = skip, non-zero = build; on a site's very
   # first deploy there is no cached commit, the command errors, and Netlify builds.
   ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ../netlify.toml"
+
+# Netlify's Next.js runtime (what serves the dynamic /r/[id] routes). Declared explicitly so it always runs in this
+# monorepo layout instead of relying on auto-detection; deliberately not pinned to a version (Netlify advises against it).
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
 
 [build.environment]
   NODE_VERSION = "20"
