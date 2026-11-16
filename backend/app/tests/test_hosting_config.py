@@ -311,6 +311,33 @@ class TestProductionGuards:
         problems = " ".join(settings.production_problems())
         assert "TURNSTILE_SECRET_KEY" in problems and "GITHUB_CLIENT_ID" in problems and "CORS_ORIGINS" in problems
 
+    @pytest.mark.parametrize(
+        "bad_host",
+        [
+            "rediss://default:AXxxAAIncDEyZjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXow@humble-fox-12345.upstash.io:6379",
+            "AXxxAAIncDEyZjM0NTY3ODkwYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5",  # the token pasted as the host
+            "https://humble-fox-12345.upstash.io",
+            "humble-fox-12345.upstash.io:6379",
+            "humble-fox-12345.upstash.io ",
+            "humble..upstash.io",
+            "",
+        ],
+    )
+    def test_a_redis_host_that_is_not_a_plain_hostname_is_named_in_the_error_without_echoing_it(self, monkeypatch, bad_host):
+        # Seen on the first Render deploy: a value that was not a hostname surfaced only as
+        # "label empty or too long" from deep inside the DNS code, with no hint which setting was wrong.
+        settings = self._healthy_hosted(monkeypatch)
+        monkeypatch.setattr(settings.redis, "redis_host", bad_host)
+        problems = settings.production_problems()
+        assert any("REDIS_HOST" in p for p in problems)
+        assert not any(bad_host.strip() and bad_host in p for p in problems)  # never leaks a pasted secret
+
+    @pytest.mark.parametrize("good_host", ["humble-fox-12345.upstash.io", "redis", "localhost", "10.0.0.5"])
+    def test_ordinary_redis_hosts_are_accepted(self, monkeypatch, good_host):
+        settings = self._healthy_hosted(monkeypatch)
+        monkeypatch.setattr(settings.redis, "redis_host", good_host)
+        assert not any("REDIS_HOST" in p for p in settings.production_problems())
+
     def test_none_of_this_applies_to_local_development(self):
         settings = Settings()
         assert settings.app.environment == "development" and settings.production_problems() == []
