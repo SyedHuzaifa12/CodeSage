@@ -1,5 +1,6 @@
 /** Centralized TanStack Query key factory — one place, no ad-hoc key arrays scattered across pages. */
 export const queryKeys = {
+  me: () => ["me"] as const,
   repositories: () => ["repositories"] as const,
   repository: (id: string) => ["repositories", id] as const,
   workspace: (id: string) => ["repositories", id, "workspace"] as const,

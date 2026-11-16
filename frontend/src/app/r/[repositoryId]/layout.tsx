@@ -1,5 +1,6 @@
 "use client";
 
+import { GuestBanner } from "@/components/auth/GuestBanner";
 import { RepositoryProvider, useRepositoryContext } from "@/context/RepositoryContext";
 import { NavRail } from "@/components/nav/NavRail";
 import { BottomNav } from "@/components/nav/BottomNav";
@@ -17,6 +18,7 @@ function RepoShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <TopBar repository={repository} />
+      <GuestBanner />
       <div className="flex min-h-0 flex-1">
         {breakpoint !== "mobile" && (
           <NavRail repositoryId={repositoryId} ready={isReady} variant={breakpoint === "tablet" ? "tablet" : "desktop"} />

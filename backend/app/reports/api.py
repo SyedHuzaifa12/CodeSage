@@ -10,14 +10,26 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import (
+    enforce_question_quota,
+    ensure_report_regeneration_allowed,
+    get_accessible_repository,
+    get_current_user,
+)
 from app.core.config import Settings, get_settings
 from app.db.postgres import get_db
+from app.models.repository import Repository
+from app.models.user import User
 from app.reports.exceptions import ReportNotFoundError
 from app.reports.schemas import GenerateReportRequest, ReportListData, ReportResponse
 from app.reports.service import ReportService
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/repositories/{repository_id}/reports", tags=["reports"])
+router = APIRouter(
+    prefix="/repositories/{repository_id}/reports",
+    tags=["reports"],
+    dependencies=[Depends(get_accessible_repository)],
+)
 
 
 def get_report_service(
@@ -35,10 +47,15 @@ def get_report_service(
     return ReportService(session=session, settings=settings)
 
 
-@router.post("/{report_type}", response_model=SuccessResponse[ReportResponse])
+@router.post(
+    "/{report_type}", response_model=SuccessResponse[ReportResponse], dependencies=[Depends(enforce_question_quota)]
+)
 async def generate_report(
     repository_id: uuid.UUID, report_type: str, payload: GenerateReportRequest = GenerateReportRequest(),
     service: ReportService = Depends(get_report_service),
+    repository: Repository = Depends(get_accessible_repository),
+    user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse[ReportResponse]:
     """Generate or return a valid cached/existing report for one repository.
 
@@ -60,6 +77,7 @@ async def generate_report(
         The structured report. A generation failure is reported as
         ``status="failed"`` with ``error_message`` set, not a 500.
     """
+    ensure_report_regeneration_allowed(repository, user, settings, payload.force_regenerate)
     data = await service.generate_or_get(repository_id, report_type, force_regenerate=payload.force_regenerate)
     message = "Report generated." if data.status == "ready" else "Report generation failed."
     return SuccessResponse(message=message, data=data)

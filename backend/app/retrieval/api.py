@@ -12,13 +12,18 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_accessible_repository
 from app.core.config import Settings, get_settings
 from app.db.postgres import get_db
 from app.retrieval.schemas import RetrievalQueryData
 from app.retrieval.service import RetrievalService
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/repositories/{repository_id}/retrieval", tags=["retrieval"])
+router = APIRouter(
+    prefix="/repositories/{repository_id}/retrieval",
+    tags=["retrieval"],
+    dependencies=[Depends(get_accessible_repository)],
+)
 
 
 def get_retrieval_service(

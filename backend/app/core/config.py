@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal, Optional
+from urllib.parse import quote
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.db.dsn import PreparedDsn, prepare_asyncpg_dsn
 
 _ENV_FILE = ".env"
 
@@ -43,6 +46,10 @@ class AppSettings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     allowed_hosts: str = "*"
     repository_storage_path: str = "data/repositories"
+    # Which part of the app this process runs (ADR-028): "api" serves HTTP and
+    # never indexes; "indexer" only runs the job-claim loop plus internal
+    # endpoints; "all" is both in one process (local dev / single-container).
+    role: Literal["api", "indexer", "all"] = "all"
 
     @property
     def cors_origins_list(self) -> list[str]:
@@ -56,7 +63,13 @@ class AppSettings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    """PostgreSQL connection parameters."""
+    """PostgreSQL connection parameters.
+
+    Two ways to configure it. Locally, the discrete ``POSTGRES_*`` fields. Hosted, one
+    ``DATABASE_URL`` exactly as the provider shows it (Neon's string works unmodified);
+    when set it wins. ``MIGRATION_DATABASE_URL`` optionally points migrations at a direct
+    (non-pooled) endpoint, which is what DDL should use; it falls back to ``DATABASE_URL``.
+    """
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
 
@@ -65,20 +78,46 @@ class DatabaseSettings(BaseSettings):
     postgres_user: str = "codesage"
     postgres_password: SecretStr = SecretStr("codesage")
     postgres_db: str = "codesage"
+    postgres_sslmode: Optional[str] = None  # discrete mode only; a URL carries its own ?sslmode=
+    database_url: Optional[SecretStr] = None
+    migration_database_url: Optional[SecretStr] = None
+    # A Neon compute scales to zero after 5 idle minutes and drops connections; recycling below that
+    # keeps the pool from handing out a connection the server has already closed.
+    postgres_pool_size: int = 5
+    postgres_max_overflow: int = 10
+    postgres_pool_recycle_seconds: int = 240
+
+    @field_validator("database_url", "migration_database_url", "postgres_sslmode", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` as "not configured"."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    def prepared(self, *, migration: bool = False) -> PreparedDsn:
+        """The SQLAlchemy URL and driver arguments for this configuration.
+
+        Args:
+            migration: Use ``MIGRATION_DATABASE_URL`` (direct endpoint) when it is set.
+
+        Raises:
+            ValueError: If a configured URL is unusable. The message never contains the URL.
+        """
+        raw = (self.migration_database_url if migration and self.migration_database_url else self.database_url)
+        if raw is not None:
+            return prepare_asyncpg_dsn(raw.get_secret_value())
+        built = (
+            f"postgresql+asyncpg://{quote(self.postgres_user, safe='')}:"
+            f"{quote(self.postgres_password.get_secret_value(), safe='')}@"
+            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+        return prepare_asyncpg_dsn(built, sslmode=self.postgres_sslmode)
 
     @property
     def async_dsn(self) -> str:
-        """Build the SQLAlchemy async DSN for the configured PostgreSQL instance.
-
-        Returns:
-            An ``postgresql+asyncpg://`` connection string built from the
-            individual host/port/credential fields.
-        """
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:"
-            f"{self.postgres_password.get_secret_value()}@"
-            f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
+        """The SQLAlchemy async URL (kept for callers that only need the string; ignores driver arguments)."""
+        return self.prepared().url
 
 
 class RedisSettings(BaseSettings):
@@ -90,6 +129,17 @@ class RedisSettings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[SecretStr] = None
+    # Upstash (and most hosted Redis) is TLS-only. Certificates are verified against the system CAs,
+    # or against ``redis_ssl_ca_certs`` for a private CA.
+    redis_ssl: bool = False
+    redis_ssl_ca_certs: Optional[str] = None
+
+    @field_validator("redis_ssl_ca_certs", mode="before")
+    @classmethod
+    def _blank_ca_means_unset(cls, value):
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
 
 class CelerySettings(BaseSettings):
@@ -138,6 +188,39 @@ class CelerySettings(BaseSettings):
     indexing_lock_ttl_seconds: int = 2400
 
 
+class IndexingSettings(BaseSettings):
+    """How indexing work is dispatched and executed (ADR-028).
+
+    ``celery`` keeps the ADR-026 behaviour (local docker-compose). ``postgres``
+    uses the ``indexing_jobs`` table as the queue — no broker — which is what
+    the hosted free-tier deployment runs.
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    indexing_backend: Literal["celery", "postgres"] = "celery"
+    # Base URL of the indexer service (e.g. https://codesage-indexer.onrender.com), used by the
+    # API role to wake it. Unused when both roles share a process.
+    indexer_url: Optional[str] = None
+    # A running job must renew its lease at least this often or another worker may take it over.
+    indexing_lease_seconds: int = 120
+    indexing_heartbeat_seconds: int = 30
+    indexing_max_attempts: int = 3  # first try + 2 retries, matching celery_max_retries
+    indexing_retry_backoff_seconds: int = 10
+    # The wake call runs in the background, and a sleeping free host can take ~1 minute to boot.
+    indexer_wake_timeout_seconds: float = 90.0
+    # API -> indexer keep-alive pings while a job is active are sent at most this often.
+    indexer_ping_min_interval_seconds: int = 30
+
+    @field_validator("indexer_url", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``INDEXER_URL=`` as unset and drop a trailing slash."""
+        if isinstance(value, str):
+            return value.strip().rstrip("/") or None
+        return value
+
+
 class QdrantSettings(BaseSettings):
     """Qdrant connection parameters."""
 
@@ -146,6 +229,25 @@ class QdrantSettings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_http_port: int = 6333
     qdrant_grpc_port: int = 6334
+    # Qdrant Cloud: one HTTPS URL plus an API key. When ``qdrant_url`` is set it replaces host/ports.
+    qdrant_url: Optional[str] = None
+    qdrant_api_key: Optional[SecretStr] = None
+    qdrant_timeout_seconds: float = 5.0  # a small free cluster answers slower than a local container
+
+    @field_validator("qdrant_url", "qdrant_api_key", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` as unset; trim whitespace and a trailing slash from the URL."""
+        if isinstance(value, str):
+            return value.strip().rstrip("/") or None
+        return value
+
+    @field_validator("qdrant_url")
+    @classmethod
+    def _url_needs_a_scheme(cls, value):
+        if value is not None and not value.startswith(("http://", "https://")):
+            raise ValueError("QDRANT_URL must start with http:// or https:// (copy it from the cluster page).")
+        return value
 
 
 class LLMSettings(BaseSettings):
@@ -179,10 +281,23 @@ class LLMSettings(BaseSettings):
     # provider above — swapping to a hosted embedding API later only
     # means adding another branch in knowledge/embedding.py, never a
     # settings redesign.
-    embedding_provider: Literal["fastembed"] = "fastembed"
+    embedding_provider: Literal["fastembed", "cloudflare"] = "fastembed"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_dimension: int = 384
     embedding_batch_size: int = 32
+    # Cloudflare Workers AI (ADR-029): the same BGE-small weights hosted,
+    # so a 512MB free host never has to load the ONNX model itself.
+    cloudflare_account_id: Optional[str] = None
+    cloudflare_api_token: Optional[SecretStr] = None
+    cloudflare_embedding_model: str = "@cf/baai/bge-small-en-v1.5"
+    # Cloudflare defaults to mean pooling, but BGE models are trained for
+    # CLS pooling (what the local ONNX model uses). Measured: "cls" gives
+    # cosine 1.0000 against the local vectors, "mean" only 0.93-0.99.
+    cloudflare_embedding_pooling: Literal["cls", "mean"] = "cls"
+    cloudflare_embedding_batch_size: int = 100  # measured: the API accepts at least 1000 per call
+    cloudflare_timeout_seconds: float = 30.0
+    cloudflare_max_retries: int = 3
+    cloudflare_retry_backoff_seconds: float = 1.0
     embedding_cache_ttl_seconds: int = 2_592_000  # 30 days — Redis is a pure perf cache, never the source of truth
     embedding_model_cache_dir: str = "data/embedding_cache"
     # How many files' chunks are pooled into one embed()/Qdrant-upsert
@@ -207,7 +322,21 @@ class LLMSettings(BaseSettings):
         Returns:
             ``"{provider}:{model}:{dimension}"``.
         """
+        if self.embedding_provider == "cloudflare":
+            # Pooling is part of the identity: switching it changes the vector space.
+            return (
+                f"cloudflare:{self.cloudflare_embedding_model}:{self.embedding_dimension}"
+                f":{self.cloudflare_embedding_pooling}"
+            )
         return f"{self.embedding_provider}:{self.embedding_model}:{self.embedding_dimension}"
+
+    @field_validator("cloudflare_account_id", "cloudflare_api_token", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` as "not configured" and trim stray whitespace (``KEY= value`` would corrupt the API URL)."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
 
 class LoggingSettings(BaseSettings):
@@ -415,6 +544,93 @@ class IngestionSettings(BaseSettings):
         return _split_csv(self.ingestion_extra_ignored_suffixes)
 
 
+_DEV_JWT_SECRET = "dev-only-insecure-jwt-secret-change-before-deploying"
+_MIN_JWT_SECRET_LENGTH = 32
+
+
+class AuthSettings(BaseSettings):
+    """Authentication, guest access, and abuse-control configuration (ADR-027).
+
+    Quota/limit fields are settings, not constants, so they can be tuned
+    per environment without a code change. Integration credentials
+    (Turnstile, GitHub OAuth) are optional so local development works
+    without them; ``Settings.production_problems`` refuses to start a
+    production process that is missing any of them.
+    """
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
+
+    jwt_secret: SecretStr = SecretStr(_DEV_JWT_SECRET)
+    jwt_issuer: str = "codesage"
+    access_token_ttl_minutes: int = 15
+    refresh_token_ttl_guest_days: int = 3
+    refresh_token_ttl_user_days: int = 30
+    # A refresh token presented again within this window of its own
+    # rotation is treated as a benign double-submit (e.g. two browser
+    # tabs), not theft: rejected, but the token family is NOT revoked.
+    refresh_reuse_grace_seconds: int = 10
+    guest_ttl_hours: int = 72
+
+    turnstile_secret_key: Optional[SecretStr] = None
+    github_client_id: Optional[str] = None
+    github_client_secret: Optional[SecretStr] = None
+    # The frontend callback URL registered on the GitHub OAuth app; sent
+    # again at code-exchange time, where GitHub requires it to match.
+    github_redirect_uri: Optional[str] = None
+    oauth_state_ttl_seconds: int = 600
+    admin_github_logins: str = ""
+    # Shared secret for server-to-server endpoints (guest cleanup).
+    internal_api_token: Optional[SecretStr] = None
+    # How many trusted reverse proxies sit in front of the app. 0 ignores
+    # X-Forwarded-For entirely (it is attacker-controlled otherwise); N
+    # takes the Nth entry from the END of the header, i.e. the address the
+    # outermost trusted proxy recorded. Must be tuned per host at deploy time.
+    trusted_proxy_hops: int = 0
+
+    guest_max_repositories: int = 1
+    user_max_repositories: int = 5
+    guest_daily_questions: int = 15
+    user_daily_questions: int = 100
+    guest_daily_repository_attempts: int = 3
+    guest_creations_per_ip_per_day: int = 5
+    guest_global_daily_index_cap: int = 30
+    guest_max_repository_files: int = 1500
+    guest_max_repository_mb: int = 40
+
+    @field_validator(
+        "turnstile_secret_key",
+        "github_client_id",
+        "github_client_secret",
+        "github_redirect_uri",
+        "internal_api_token",
+        mode="before",
+    )
+    @classmethod
+    def _blank_means_unset(cls, value):
+        """Treat ``KEY=`` in a copied ``.env.example`` as "not configured", not as an empty secret."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("jwt_secret", mode="before")
+    @classmethod
+    def _blank_jwt_secret_uses_dev_default(cls, value):
+        """A blank ``JWT_SECRET=`` falls back to the dev default (which production refuses to start with)."""
+        if isinstance(value, str) and not value.strip():
+            return _DEV_JWT_SECRET
+        return value
+
+    @property
+    def admin_github_logins_list(self) -> list[str]:
+        """Parsed, lower-cased admin GitHub logins."""
+        return [login.lower() for login in _split_csv(self.admin_github_logins)]
+
+    @property
+    def github_oauth_configured(self) -> bool:
+        """Whether every GitHub OAuth credential needed for the login flow is present."""
+        return bool(self.github_client_id and self.github_client_secret and self.github_redirect_uri)
+
+
 class Settings:
     """Aggregates every settings group behind a single access point."""
 
@@ -430,6 +646,66 @@ class Settings:
         self.reports = ReportSettings()
         self.ingestion = IngestionSettings()
         self.celery = CelerySettings()
+        self.indexing = IndexingSettings()
+        self.auth = AuthSettings()
+
+    def _hosting_problems(self) -> list[str]:
+        """Checks that only matter once the app is reachable from the internet."""
+        import importlib.util
+
+        problems: list[str] = []
+        if "*" in self.app.allowed_hosts_list:
+            problems.append("ALLOWED_HOSTS must list your real hostnames, not '*' (e.g. 'myapi.onrender.com').")
+        try:
+            self.database.prepared()
+        except ValueError as exc:
+            problems.append(f"Database configuration: {exc}")
+        else:
+            if self.database.database_url is None and self.database.postgres_password.get_secret_value() == "codesage":
+                problems.append("Set DATABASE_URL (or a real POSTGRES_PASSWORD): the default database password is public.")
+        if self.llm.embedding_provider == "fastembed" and importlib.util.find_spec("fastembed") is None:
+            problems.append("EMBEDDING_PROVIDER=fastembed but fastembed is not installed (use EMBEDDING_PROVIDER=cloudflare).")
+        return problems
+
+    def production_problems(self) -> list[str]:
+        """List security-relevant misconfigurations that must block a non-development start.
+
+        Applies to ``staging`` as well as ``production``: a staging server
+        is still reachable from the internet, so it must not run with the
+        publicly known development JWT secret or without bot protection.
+
+        Returns:
+            Human-readable problems; empty in development or when the
+            configuration is sound.
+        """
+        if self.app.environment == "development":
+            return []
+        problems: list[str] = []
+        # Sign-in, bot protection and CORS only exist where users connect: the indexer serves no browsers.
+        if self.app.role in ("api", "all"):
+            secret = self.auth.jwt_secret.get_secret_value()
+            if secret == _DEV_JWT_SECRET or len(secret) < _MIN_JWT_SECRET_LENGTH:
+                problems.append(f"JWT_SECRET must be set to a random value of at least {_MIN_JWT_SECRET_LENGTH} characters.")
+            if self.auth.turnstile_secret_key is None:
+                problems.append("TURNSTILE_SECRET_KEY is required (guest creation must be bot-protected).")
+            if not self.auth.github_oauth_configured:
+                problems.append("GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI are required.")
+            if "*" in self.app.cors_origins_list:
+                problems.append("CORS_ORIGINS must list your real frontend origin(s), not '*' (credentials are allowed).")
+        if self.auth.internal_api_token is None:
+            problems.append("INTERNAL_API_TOKEN is required (it guards the internal wake/cleanup endpoints; API and indexer must share it).")
+        if self.app.debug:
+            problems.append("DEBUG must be false in production.")
+        if self.indexing.indexing_backend == "postgres" and self.app.role == "api" and not self.indexing.indexer_url:
+            problems.append("INDEXER_URL is required for ROLE=api with INDEXING_BACKEND=postgres (the API must be able to wake the indexer).")
+        if self.app.role == "indexer" and self.indexing.indexing_backend != "postgres":
+            problems.append("ROLE=indexer requires INDEXING_BACKEND=postgres.")
+        problems.extend(self._hosting_problems())
+        if self.llm.embedding_provider == "cloudflare" and (
+            not self.llm.cloudflare_account_id or self.llm.cloudflare_api_token is None
+        ):
+            problems.append("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required when EMBEDDING_PROVIDER=cloudflare.")
+        return problems
 
 
 @lru_cache

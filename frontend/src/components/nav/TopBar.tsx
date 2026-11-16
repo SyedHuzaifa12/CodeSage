@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Info, Search } from "lucide-react";
+import { UserMenu } from "@/components/auth/UserMenu";
 import { TopologyMark } from "@/components/devices/TopologyMark";
 import { RepoStatusChip } from "@/components/domain/RepoStatusChip";
 import { CommandPalette } from "@/components/nav/CommandPalette";
@@ -64,14 +65,7 @@ export function TopBar({ repository }: { repository?: Repository }) {
       >
         <Info size={17} strokeWidth={1.5} aria-hidden="true" />
       </Link>
-      <span
-        className="hidden h-7 w-7 place-items-center rounded-full border border-border-subtle bg-surface-3 font-mono text-[10px] text-text-secondary sm:grid"
-        title="Single local workspace — CodeSage has no accounts"
-        aria-label="Local workspace, no account"
-        role="img"
-      >
-        LW
-      </span>
+      <UserMenu />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} repository={repository} />
     </header>
   );

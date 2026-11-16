@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from _auth import authorized_client
+
 
 @dataclass
 class AIEvalQuestion:
@@ -131,7 +133,7 @@ def run_eval(base_url: str, repository_id: str, fixture: list[AIEvalQuestion]) -
         Per-question results.
     """
     results = []
-    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+    with authorized_client(base_url, 60.0) as client:
         for question in fixture:
             result = run_question(client, repository_id, question, force_refresh=True)
             results.append(result)
@@ -167,7 +169,7 @@ def measure_cache_latency(base_url: str, repository_id: str, question: str) -> t
     Returns:
         ``(cold_ms, warm_ms)``.
     """
-    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+    with authorized_client(base_url, 60.0) as client:
         cold_started = time.perf_counter()
         client.post(f"/api/v1/repositories/{repository_id}/ask", json={"query": question, "options": {"force_refresh": True}})
         cold_ms = (time.perf_counter() - cold_started) * 1000

@@ -50,6 +50,14 @@ class WorkspaceScanError(IngestionError):
     """Raised when a workspace scan fails (e.g. the local clone directory is missing)."""
 
 
+class IndexingCancelledError(IngestionError):
+    """Raised inside a pipeline run when its job was cancelled or taken over (ADR-028).
+
+    Cooperative cancellation: the pipeline checks at each stage boundary, so a
+    cancelled job stops at the next boundary and its uncommitted work is rolled back.
+    """
+
+
 class IntelligenceNotFoundError(IngestionError):
     """Raised when a repository exists but has never been analyzed (Sprint 2B)."""
 

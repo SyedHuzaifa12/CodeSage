@@ -1,24 +1,10 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-pydantic-settings
-sqlalchemy[asyncio]
-asyncpg
-alembic
-redis
-qdrant-client
-GitPython
-pathspec>=0.12.1
-tree-sitter
-tree-sitter-python
-tree-sitter-javascript
-tree-sitter-typescript
-tree-sitter-java
+# Local development / docker-compose / CI: everything in requirements-base.txt plus the local-only extras.
+-r requirements-base.txt
+
+# Local ONNX embedding model (EMBEDDING_PROVIDER=fastembed). Not installed in hosted images, which use Cloudflare.
 fastembed
-numpy
+
+# Tests
 pytest
 pytest-asyncio
-httpx
-langgraph
-groq
-celery[redis]
+pyyaml  # app/tests/test_deploy_files.py parses render.yaml

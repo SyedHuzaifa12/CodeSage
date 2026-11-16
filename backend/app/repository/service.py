@@ -8,22 +8,36 @@ indexes — that is Ingestion's and Knowledge's job respectively
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.qdrant import get_qdrant_client
+from app.indexing.notify import is_postgres_backend
+from app.indexing.service import cancel_job
 from app.ingestion.service import WorkspaceService
 from app.knowledge.qdrant_store import delete_points_by_repository
 from app.models.repository import Repository
 from app.repository import repository as repository_db
-from app.repository.exceptions import RepositoryAlreadyExistsError, RepositoryNotFoundError
+from app.repository.exceptions import (
+    RepositoryAlreadyExistsError,
+    RepositoryNotFoundError,
+    RepositoryTooLargeError,
+)
 from app.repository.schemas import RepositoryCreateRequest, RepositoryUpdateRequest
-from app.repository.utils import build_local_path, clone_repository, parse_github_url, remove_local_clone
+from app.repository.utils import (
+    build_local_path,
+    clone_repository,
+    measure_tree,
+    parse_github_url,
+    remove_local_clone,
+)
 
 logger = logging.getLogger("codesage.repository.service")
 
@@ -45,22 +59,22 @@ class RepositoryService:
         self._settings = settings
         self._workspace_service = workspace_service
 
-    async def create_repository(self, payload: RepositoryCreateRequest) -> Repository:
-        """Register a new repository and clone it locally.
+    async def register_repository(self, payload: RepositoryCreateRequest, owner_id: uuid.UUID) -> Repository:
+        """Validate the URL and create the repository row, without cloning anything.
 
         Args:
             payload: The validated creation request.
+            owner_id: The user who will own the repository.
 
         Returns:
-            The persisted repository, in ``ready`` or ``failed`` status.
+            The persisted repository in ``cloning`` status, with its clone path assigned.
 
         Raises:
-            RepositoryAlreadyExistsError: If the URL is already registered.
-            RepositoryCloneError: If cloning fails (also recorded on the row).
+            RepositoryAlreadyExistsError: If this owner already imported the URL.
         """
         _, repo_name = parse_github_url(payload.github_url)
 
-        existing = await repository_db.get_by_github_url(self._session, payload.github_url)
+        existing = await repository_db.get_by_github_url(self._session, payload.github_url, owner_id)
         if existing is not None:
             raise RepositoryAlreadyExistsError(f"Repository '{payload.github_url}' is already registered.")
 
@@ -69,6 +83,7 @@ class RepositoryService:
             github_url=payload.github_url,
             local_path="",
             status="pending",
+            owner_id=owner_id,
         )
         repository = await repository_db.create(self._session, repository)
         logger.info("Repository %s created with status PENDING", repository.id)
@@ -79,21 +94,68 @@ class RepositoryService:
         repository.status = "cloning"
         await repository_db.save(self._session, repository)
         logger.info("Repository %s transitioning to CLONING at %s", repository.id, local_path)
+        return repository
+
+    async def clone_and_scan(
+        self,
+        repository: Repository,
+        max_files: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+        *,
+        publish_progress: bool = False,
+        begin_indexing: bool = False,
+    ) -> None:
+        """Clone a registered repository, enforce size limits, and run the first workspace scan.
+
+        The blocking work (``git clone``, the size walk, the scan) runs in a worker
+        thread so it never stalls the event loop of whichever process calls this.
+
+        Args:
+            repository: A repository returned by :meth:`register_repository`.
+            max_files: If set, reject a clone containing more files than this.
+            max_bytes: If set, reject a clone whose working tree exceeds this size.
+            publish_progress: Commit after each status change so other processes polling the
+                row see it immediately (the indexer needs this; a request handler does not).
+            begin_indexing: Flip ``indexing_status`` to ``indexing`` in the same commit that
+                marks the clone ready, so a poller never sees a "ready, not started" gap
+                between cloning and the automatic indexing that follows it.
+
+        Raises:
+            RepositoryCloneError: If cloning fails (also recorded on the row).
+            RepositoryTooLargeError: If the clone exceeds ``max_files``/``max_bytes``.
+        """
+        local_path = Path(repository.local_path)
+        # A retried job may find a half-finished clone from the attempt that died.
+        remove_local_clone(local_path)
 
         clone_started = time.perf_counter()
         try:
-            clone_repository(payload.github_url, local_path)
+            await asyncio.to_thread(clone_repository, repository.github_url, local_path)
+            if max_files is not None or max_bytes is not None:
+                measure = await asyncio.to_thread(measure_tree, local_path, max_files, max_bytes)
+                if measure.exceeded:
+                    remove_local_clone(local_path)
+                    raise RepositoryTooLargeError(
+                        "This repository is larger than the free demo allows. Sign in with GitHub to index bigger repositories."
+                    )
         except Exception as exc:
             repository.status = "failed"
             repository.error_message = str(exc)
             await repository_db.save(self._session, repository)
+            if publish_progress:
+                await self._session.commit()
             logger.error("Repository %s transitioned to FAILED: %s", repository.id, exc)
             raise
         clone_ms = int((time.perf_counter() - clone_started) * 1000)
 
         repository.status = "ready"
         repository.error_message = None
+        if begin_indexing:
+            repository.indexing_status = "indexing"
+            repository.indexing_progress = 0
         await repository_db.save(self._session, repository)
+        if publish_progress:
+            await self._session.commit()
         logger.info("Repository %s transitioned to READY (clone_ms=%d)", repository.id, clone_ms)
 
         scan_started = time.perf_counter()
@@ -111,7 +173,38 @@ class RepositoryService:
             "STAGE_TIMING repository=%s clone_ms=%d scan_ms=%d excluded_files=%d",
             repository.id, clone_ms, scan_ms, excluded_count,
         )
+        if publish_progress:
+            await self._session.commit()
 
+    async def create_repository(
+        self,
+        payload: RepositoryCreateRequest,
+        owner_id: uuid.UUID,
+        max_files: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+    ) -> Repository:
+        """Register a new repository for ``owner_id`` and clone it before returning.
+
+        This is the inline path (``INDEXING_BACKEND=celery`` and scripts). In
+        ``postgres`` mode the API only calls :meth:`register_repository` and leaves the
+        clone to the indexer.
+
+        Args:
+            payload: The validated creation request.
+            owner_id: The user who will own the repository.
+            max_files: If set, reject a clone containing more files than this.
+            max_bytes: If set, reject a clone whose working tree exceeds this size.
+
+        Returns:
+            The persisted repository, in ``ready`` or ``failed`` status.
+
+        Raises:
+            RepositoryAlreadyExistsError: If this owner already imported the URL.
+            RepositoryCloneError: If cloning fails (also recorded on the row).
+            RepositoryTooLargeError: If the clone exceeds ``max_files``/``max_bytes``.
+        """
+        repository = await self.register_repository(payload, owner_id)
+        await self.clone_and_scan(repository, max_files, max_bytes)
         return repository
 
     async def get_repository(self, repository_id: uuid.UUID) -> Repository:
@@ -131,13 +224,16 @@ class RepositoryService:
             raise RepositoryNotFoundError(f"Repository '{repository_id}' was not found.")
         return repository
 
-    async def list_repositories(self) -> list[Repository]:
-        """Fetch every registered repository.
+    async def list_repositories(self, owner_id: uuid.UUID) -> list[Repository]:
+        """Fetch the repositories a user may see: their own plus every demo repository.
+
+        Args:
+            owner_id: The viewing user.
 
         Returns:
-            All repositories, most recently created first.
+            Visible repositories, most recently created first.
         """
-        return await repository_db.list_all(self._session)
+        return await repository_db.list_visible(self._session, owner_id)
 
     async def update_repository(self, repository_id: uuid.UUID, payload: RepositoryUpdateRequest) -> Repository:
         """Update a repository's mutable fields (currently: display name only).
@@ -180,6 +276,11 @@ class RepositoryService:
             RepositoryNotFoundError: If no repository has that id.
         """
         repository = await self.get_repository(repository_id)
+        if is_postgres_backend(self._settings):
+            # Withdraw/stop any queued or running job first and make that visible, so the indexer stops at its
+            # next stage boundary instead of indexing a repository that is about to disappear.
+            await cancel_job(self._session, repository_id)
+            await self._session.commit()
         repository.status = "deleted"
         logger.info("Repository %s transitioning to DELETED", repository.id)
 

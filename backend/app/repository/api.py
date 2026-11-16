@@ -3,12 +3,23 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import (
+    RepositoryCreationGuard,
+    get_accessible_repository,
+    get_current_user,
+    get_repository_creation_guard,
+    require_repository_write,
+)
 from app.core.config import Settings, get_settings
 from app.db.postgres import get_db
+from app.indexing.notify import is_postgres_backend, ping_indexer_if_due, wake_indexer
+from app.indexing.service import enqueue_job
 from app.ingestion.service import WorkspaceService, get_workspace_service
+from app.models.repository import Repository
+from app.models.user import User
 from app.repository.schemas import (
     RepositoryCreateRequest,
     RepositoryListData,
@@ -43,57 +54,93 @@ def get_repository_service(
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[RepositoryResponse])
 async def create_repository(
     payload: RepositoryCreateRequest,
+    background_tasks: BackgroundTasks,
     service: RepositoryService = Depends(get_repository_service),
+    guard: RepositoryCreationGuard = Depends(get_repository_creation_guard),
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse[RepositoryResponse]:
-    """Register and clone a new repository.
+    """Register a new repository for the signed-in user (or guest).
+
+    With ``INDEXING_BACKEND=celery`` the repository is cloned before this returns (``ready``).
+    With ``postgres`` (hosted mode, ADR-028) this returns at once with status ``cloning``; the
+    indexer role clones it and then indexes it, and clients poll ``GET /repositories/{id}``.
 
     Args:
         payload: The GitHub URL (and optional display name) to import.
+        background_tasks: Used to wake the indexer once the job is committed.
         service: Injected repository service.
+        guard: Enforces repository quotas and supplies clone size limits.
+        session: The request's database session (the same one ``service`` uses).
+        settings: Application settings.
 
     Returns:
         The created repository.
     """
-    repository = await service.create_repository(payload)
+    limits = await guard.authorize()
+    if is_postgres_backend(settings):
+        repository = await service.register_repository(payload, guard.user.id)
+        await enqueue_job(
+            session, repository.id, "full_index", max_files=limits.max_files, max_bytes=limits.max_bytes,
+            settings=settings,
+        )
+        await session.commit()  # the indexer reads these rows from another process: commit before waking it
+        background_tasks.add_task(wake_indexer, settings)
+        return SuccessResponse(message="Repository registered; cloning and indexing will start shortly.", data=repository)
+    repository = await service.create_repository(payload, guard.user.id, limits.max_files, limits.max_bytes)
     return SuccessResponse(message="Repository imported.", data=repository)
 
 
 @router.get("", response_model=SuccessResponse[RepositoryListData])
 async def list_repositories(
     service: RepositoryService = Depends(get_repository_service),
+    user: User = Depends(get_current_user),
 ) -> SuccessResponse[RepositoryListData]:
-    """List every registered repository.
+    """List the caller's repositories plus every demo repository.
 
     Args:
         service: Injected repository service.
+        user: The authenticated caller.
 
     Returns:
-        Every repository and the total count.
+        Visible repositories and the total count.
     """
-    repositories = await service.list_repositories()
+    repositories = await service.list_repositories(user.id)
     data = RepositoryListData(repositories=repositories, total=len(repositories))
     return SuccessResponse(message="Repositories retrieved.", data=data)
 
 
 @router.get("/{repository_id}", response_model=SuccessResponse[RepositoryResponse])
 async def get_repository(
-    repository_id: uuid.UUID,
-    service: RepositoryService = Depends(get_repository_service),
+    background_tasks: BackgroundTasks,
+    repository: Repository = Depends(get_accessible_repository),
+    settings: Settings = Depends(get_settings),
 ) -> SuccessResponse[RepositoryResponse]:
-    """Fetch a single repository by id.
+    """Fetch a single repository the caller may access.
+
+    While the repository is being cloned or indexed in queue mode, this poll also sends the
+    indexer a rate-limited keep-alive: the inbound request stops a free host spinning down
+    mid-job, and doubles as a retry for a wake that was lost while the host was still booting.
 
     Args:
-        repository_id: The repository's UUID primary key.
-        service: Injected repository service.
+        background_tasks: Used to send the keep-alive after the response.
+        repository: The repository, already loaded and access-checked (404 if not the caller's).
+        settings: Application settings.
 
     Returns:
         The matching repository.
     """
-    repository = await service.get_repository(repository_id)
+    active = repository.status in ("pending", "cloning") or repository.indexing_status == "indexing"
+    if active and is_postgres_backend(settings):
+        background_tasks.add_task(ping_indexer_if_due, settings)
     return SuccessResponse(message="Repository retrieved.", data=repository)
 
 
-@router.patch("/{repository_id}", response_model=SuccessResponse[RepositoryResponse])
+@router.patch(
+    "/{repository_id}",
+    response_model=SuccessResponse[RepositoryResponse],
+    dependencies=[Depends(require_repository_write)],
+)
 async def update_repository(
     repository_id: uuid.UUID,
     payload: RepositoryUpdateRequest,
@@ -113,7 +160,9 @@ async def update_repository(
     return SuccessResponse(message="Repository updated.", data=repository)
 
 
-@router.delete("/{repository_id}", response_model=SuccessResponse[dict])
+@router.delete(
+    "/{repository_id}", response_model=SuccessResponse[dict], dependencies=[Depends(require_repository_write)]
+)
 async def delete_repository(
     repository_id: uuid.UUID,
     service: RepositoryService = Depends(get_repository_service),

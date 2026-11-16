@@ -26,3 +26,7 @@ class CacheConnectionError(CodeSageError):
 
 class VectorStoreConnectionError(CodeSageError):
     """Raised when Qdrant cannot be reached."""
+
+
+class ConfigurationError(CodeSageError):
+    """Raised at startup when the configuration is unsafe for the active environment."""

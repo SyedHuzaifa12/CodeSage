@@ -18,6 +18,7 @@ import hashlib
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import get_session_factory
 from app.ingestion import repository as ingestion_db
+from app.ingestion.exceptions import IndexingCancelledError
 from app.ingestion.intelligence_service import RepositoryIntelligenceService
 from app.ingestion.parsers import ParserManager, create_default_parser_manager
 from app.ingestion.parsers.base import module_path_from_relative_path
@@ -36,6 +38,10 @@ from app.repository import repository as repository_db
 logger = logging.getLogger("codesage.ingestion.parsing_service")
 
 RelationshipEdge = tuple[str, str, str]
+
+# Called with the stage name ("parse", "intelligence", "knowledge") just before each stage starts.
+# The job runner uses it to stop at a stage boundary when a job was cancelled (ADR-028).
+StageHook = Callable[[str], Awaitable[None]]
 
 # Caps how many times ``Repository.indexing_progress`` is persisted
 # during a single parse run (plus always once more on the final file) —
@@ -170,7 +176,7 @@ class ParsingService:
         ]
 
 
-async def run_parsing_pipeline(repository_id: uuid.UUID) -> None:
+async def run_parsing_pipeline(repository_id: uuid.UUID, before_stage: Optional[StageHook] = None) -> Optional[str]:
     """Background-task entry point: parse a repository using a fresh session.
 
     Never reuses the request-scoped session from the ``/index`` route —
@@ -179,11 +185,24 @@ async def run_parsing_pipeline(repository_id: uuid.UUID) -> None:
 
     Args:
         repository_id: The repository to parse.
+        before_stage: Optional hook awaited before each stage. It may raise
+            ``IndexingCancelledError`` to stop the run; uncommitted work is rolled back.
+
+    Returns:
+        ``None`` on success. If the knowledge (embedding) stage failed, the repository is
+        marked ``failed`` with that stage's message and the message is returned, so the
+        caller can record the job as failed. (Previously the repository stayed "indexed"
+        with no usable search index.)
+
+    Raises:
+        IndexingCancelledError: If ``before_stage`` cancelled the run.
     """
     session_factory = get_session_factory()
     pipeline_started = time.perf_counter()
     async with session_factory() as session:
         try:
+            if before_stage:
+                await before_stage("parse")
             service = ParsingService(session)
             parse_started = time.perf_counter()
             await service.parse_repository(repository_id)
@@ -192,15 +211,28 @@ async def run_parsing_pipeline(repository_id: uuid.UUID) -> None:
             # Sequential, same session/background task — no new deadlock
             # risk (see WorkspaceService.request_indexing's commit-before-
             # background-task note for the failure mode this avoids).
+            if before_stage:
+                await before_stage("intelligence")
             intelligence_service = RepositoryIntelligenceService(session)
             intelligence_started = time.perf_counter()
             await intelligence_service.analyze_repository(repository_id)
             intelligence_ms = int((time.perf_counter() - intelligence_started) * 1000)
 
+            if before_stage:
+                await before_stage("knowledge")
             knowledge_service = KnowledgeService(session)
             knowledge_started = time.perf_counter()
-            await knowledge_service.index_repository(repository_id)
+            knowledge_state = await knowledge_service.index_repository(repository_id)
             knowledge_ms = int((time.perf_counter() - knowledge_started) * 1000)
+
+            failure: Optional[str] = None
+            if knowledge_state.status == "failed":
+                failure = knowledge_state.error_message or "Knowledge indexing failed."
+                repository = await repository_db.get_by_id(session, repository_id)
+                if repository is not None:
+                    repository.indexing_status = "failed"
+                    repository.error_message = failure
+                    await repository_db.save(session, repository)
 
             await session.commit()
 
@@ -211,6 +243,12 @@ async def run_parsing_pipeline(repository_id: uuid.UUID) -> None:
                 "chunking_ms/embedding_ms/upsert_ms breakdown within knowledge_ms)",
                 repository_id, parse_ms, intelligence_ms, knowledge_ms, total_ms,
             )
+            return failure
+        except IndexingCancelledError:
+            # Stopped on purpose: discard this run's uncommitted work. Deliberately does NOT
+            # touch the repository row — whoever cancelled already set the state they wanted.
+            await session.rollback()
+            raise
         except Exception as exc:
             await session.rollback()
             logger.exception("Parsing pipeline crashed for repository %s", repository_id)

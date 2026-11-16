@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.repository import Repository
@@ -58,30 +58,47 @@ async def get_by_id(session: AsyncSession, repository_id: uuid.UUID) -> Optional
     return await session.get(Repository, repository_id)
 
 
-async def get_by_github_url(session: AsyncSession, github_url: str) -> Optional[Repository]:
-    """Fetch a repository by its source GitHub URL.
+async def get_by_github_url(session: AsyncSession, github_url: str, owner_id: uuid.UUID) -> Optional[Repository]:
+    """Fetch one of an owner's non-failed repositories by its source GitHub URL.
+
+    Scoped to the owner so one user's imports are never visible to (or
+    block) another's. Failed rows are ignored so a failed clone can be retried.
 
     Args:
         session: The active database session.
         github_url: The URL to match.
+        owner_id: The user whose repositories to search.
 
     Returns:
         The matching repository, or ``None`` if not found.
     """
-    result = await session.execute(select(Repository).where(Repository.github_url == github_url))
+    result = await session.execute(
+        select(Repository)
+        .where(
+            Repository.github_url == github_url,
+            Repository.owner_id == owner_id,
+            Repository.status != "failed",
+        )
+        .limit(1)
+    )
     return result.scalar_one_or_none()
 
 
-async def list_all(session: AsyncSession) -> list[Repository]:
-    """Fetch every repository, most recently created first.
+async def list_visible(session: AsyncSession, owner_id: uuid.UUID) -> list[Repository]:
+    """Fetch the repositories a user may see — their own plus every demo — newest first.
 
     Args:
         session: The active database session.
+        owner_id: The viewing user.
 
     Returns:
-        All repository rows.
+        The visible repository rows.
     """
-    result = await session.execute(select(Repository).order_by(Repository.created_at.desc()))
+    result = await session.execute(
+        select(Repository)
+        .where(or_(Repository.owner_id == owner_id, Repository.is_demo.is_(True)))
+        .order_by(Repository.created_at.desc())
+    )
     return list(result.scalars().all())
 
 

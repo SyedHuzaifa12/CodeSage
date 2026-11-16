@@ -36,6 +36,8 @@ def _build_redis_url(db: int) -> str:
     """
     settings = get_settings().redis
     auth = f":{settings.redis_password.get_secret_value()}@" if settings.redis_password else ""
+    if settings.redis_ssl:
+        return f"rediss://{auth}{settings.redis_host}:{settings.redis_port}/{db}?ssl_cert_reqs=required"
     return f"redis://{auth}{settings.redis_host}:{settings.redis_port}/{db}"
 
 
@@ -108,6 +110,11 @@ def _warm_up_embedding_model(**kwargs) -> None:
     real task if this pre-warm itself fails for any reason.
     """
     try:
+        from app.core.config import get_settings
+
+        if get_settings().llm.embedding_provider != "fastembed":
+            return  # nothing to load locally; a hosted provider would just spend quota on a throwaway call
+
         from app.knowledge.embedding import get_embedding_provider
 
         provider = get_embedding_provider()

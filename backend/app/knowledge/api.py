@@ -12,10 +12,13 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_accessible_repository, require_repository_write
 from app.db.postgres import get_db
+from app.indexing.notify import is_postgres_backend, wake_indexer
+from app.indexing.service import enqueue_job
 from app.knowledge import repository as knowledge_db
 from app.knowledge.exceptions import RepositoryNotIndexedError
 from app.knowledge.schemas import (
@@ -28,7 +31,11 @@ from app.repository import repository as repository_db
 from app.repository.exceptions import RepositoryNotFoundError
 from app.schemas.envelope import SuccessResponse
 
-router = APIRouter(prefix="/repositories/{repository_id}/knowledge", tags=["knowledge"])
+router = APIRouter(
+    prefix="/repositories/{repository_id}/knowledge",
+    tags=["knowledge"],
+    dependencies=[Depends(get_accessible_repository)],
+)
 
 
 async def _require_repository(session: AsyncSession, repository_id: uuid.UUID) -> None:
@@ -102,9 +109,13 @@ async def list_chunks(
     return SuccessResponse(message="Chunks retrieved.", data=data)
 
 
-@router.post("/reindex", response_model=SuccessResponse[KnowledgeReindexResponse])
+@router.post(
+    "/reindex",
+    response_model=SuccessResponse[KnowledgeReindexResponse],
+    dependencies=[Depends(require_repository_write)],
+)
 async def trigger_reindex(
-    repository_id: uuid.UUID, session: AsyncSession = Depends(get_db)
+    repository_id: uuid.UUID, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_db)
 ) -> SuccessResponse[KnowledgeReindexResponse]:
     """Manually re-run knowledge indexing for a repository as a Celery task (ADR-026).
 
@@ -123,11 +134,16 @@ async def trigger_reindex(
         An acknowledgement payload — indexing has started, not finished.
     """
     await _require_repository(session, repository_id)
-    # Imported locally — see the matching comment in
-    # ``ingestion/service.py::request_indexing`` for why.
-    from app.ingestion.tasks import run_knowledge_reindex_task
+    if is_postgres_backend():
+        await enqueue_job(session, repository_id, "knowledge_reindex")
+        await session.commit()  # the indexer must be able to see the row before it is woken
+        background_tasks.add_task(wake_indexer)
+    else:
+        # Imported locally — see the matching comment in
+        # ``ingestion/service.py::request_indexing`` for why.
+        from app.ingestion.tasks import run_knowledge_reindex_task
 
-    run_knowledge_reindex_task.delay(str(repository_id))
+        run_knowledge_reindex_task.delay(str(repository_id))
     data = KnowledgeReindexResponse(
         repository_id=repository_id,
         message="Knowledge re-indexing started in the background. Poll GET .../knowledge for progress.",

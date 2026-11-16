@@ -1,0 +1,152 @@
+# Render Blueprint — CodeSage hosted deployment (ADR-028, ADR-030).
+#
+# Two free web services built from ONE image (backend/Dockerfile.hosted); the ROLE variable picks the job:
+#   codesage-api      ROLE=api      HTTP only. Never indexes. Wakes the indexer when there is work.
+#   codesage-indexer  ROLE=indexer  Claims indexing jobs from Postgres (clone -> parse -> embed). No users.
+#
+# How it is used (Phase 7): Render dashboard -> New -> Blueprint -> pick this repo. Render then PROMPTS for every
+# variable marked `sync: false` below — but only at this first creation. A secret added to this file later is NOT
+# prompted for; add it in the service's Environment tab by hand.
+#
+# Rules this file follows:
+#  - No secrets here, ever. Secrets are `sync: false` (entered in the dashboard) or `generateValue: true`.
+#  - Render does not interpolate ${VARS} in this file, so values that depend on another service's URL are prompted.
+#  - autoDeployTrigger: off — deploys are started by CI (Phase 8) AFTER database migrations succeed, via the
+#    services' deploy hooks, so new code never runs against an old schema.
+#  - Free instances sleep after 15 minutes without traffic and have 750 instance-hours/month for the whole
+#    workspace: do not add uptime pingers.
+
+services:
+  - type: web
+    name: codesage-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./backend/Dockerfile.hosted
+    dockerContext: ./backend
+    healthCheckPath: /health/live # liveness only: the deep /health wakes Neon/Qdrant and burns free-tier quota
+    autoDeployTrigger: "off"
+    envVars:
+      # --- what this process is
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: ROLE
+        value: api
+      - key: INDEXING_BACKEND
+        value: postgres
+      - key: EMBEDDING_PROVIDER
+        value: cloudflare
+      - key: LOG_TO_FILE
+        value: "false" # stdout only; the container disk is ephemeral
+      # --- web layer
+      - key: ALLOWED_HOSTS
+        value: "*.onrender.com"
+      - key: CORS_ORIGINS # the Netlify site, e.g. https://<name>.netlify.app (no trailing slash)
+        sync: false
+      # --- Neon (Postgres): paste the POOLED connection string exactly as Neon shows it
+      - key: DATABASE_URL
+        sync: false
+      - key: POSTGRES_POOL_SIZE
+        value: "3"
+      - key: POSTGRES_MAX_OVERFLOW
+        value: "3"
+      # --- Upstash (Redis, TLS only)
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: REDIS_DB
+        value: "0"
+      - key: REDIS_SSL
+        value: "true"
+      # --- Qdrant Cloud
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_TIMEOUT_SECONDS
+        value: "20"
+      # --- Cloudflare Workers AI (embeddings) and Groq (LLM answers)
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      # --- accounts and abuse protection (ADR-027)
+      - key: JWT_SECRET
+        generateValue: true
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_REDIRECT_URI # https://<netlify-site>.netlify.app/auth/callback
+        sync: false
+      - key: ADMIN_GITHUB_LOGINS
+        value: SyedHuzaifa12
+      - key: TRUSTED_PROXY_HOPS # how many proxies sit in front of the app; VERIFY in the Phase 7 smoke test
+        value: "1"
+      # --- talking to the indexer (the same INTERNAL_API_TOKEN value must be set on both services)
+      - key: INDEXER_URL # public URL of the indexer service, e.g. https://codesage-indexer.onrender.com
+        sync: false
+      - key: INTERNAL_API_TOKEN
+        sync: false
+
+  - type: web
+    name: codesage-indexer
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./backend/Dockerfile.hosted
+    dockerContext: ./backend
+    healthCheckPath: /health/live
+    autoDeployTrigger: "off"
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: ROLE
+        value: indexer
+      - key: INDEXING_BACKEND
+        value: postgres
+      - key: EMBEDDING_PROVIDER
+        value: cloudflare
+      - key: LOG_TO_FILE
+        value: "false"
+      - key: ALLOWED_HOSTS
+        value: "*.onrender.com"
+      - key: DATABASE_URL
+        sync: false
+      - key: POSTGRES_POOL_SIZE
+        value: "2"
+      - key: POSTGRES_MAX_OVERFLOW
+        value: "2"
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: REDIS_DB
+        value: "0"
+      - key: REDIS_SSL
+        value: "true"
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_TIMEOUT_SECONDS
+        value: "20"
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: INTERNAL_API_TOKEN # identical to the API's
+        sync: false

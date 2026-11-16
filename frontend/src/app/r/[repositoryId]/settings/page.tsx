@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, ChevronDown, RefreshCw, Trash2 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 import { useRepositoryContext } from "@/context/RepositoryContext";
 import { DeleteRepositoryDialog } from "@/components/domain/DeleteRepositoryDialog";
 import { Button } from "@/components/ui/Button";
@@ -139,6 +140,9 @@ export default function SettingsPage() {
   const refresh = useRefreshWorkspace();
   const reset = useResetWorkspace();
   const rename = useUpdateRepositoryName();
+  const { isAdmin } = useAuth();
+  // The shared demo repository is read-only for everyone except admins (the API enforces this too).
+  const readOnly = Boolean(repository?.is_demo) && !isAdmin;
   const health = useQuery({ queryKey: ["health"], queryFn: () => fetchHealth(), refetchInterval: 30_000, retry: false });
   const [name, setName] = useState("");
   const [confirm, setConfirm] = useState<"reindex" | "reset" | null>(null);
@@ -199,6 +203,11 @@ export default function SettingsPage() {
         <p className="cs-mono-label">Index &amp; settings</p>
         <h1 className="cs-display mt-2">{repository.name}</h1>
         {repository.github_url && <p className="cs-monoline mt-2">{repository.github_url}</p>}
+        {readOnly && (
+          <Notice className="mt-5" title="Demo repository">
+            This is a shared, read-only showcase. You can explore it and ask questions, but indexing and settings are locked.
+          </Notice>
+        )}
         <div aria-live="polite">{notice && <Notice className="mt-5">{notice}</Notice>}</div>
 
         <section className="mt-8 border-t border-border-subtle pt-7" aria-labelledby="kih">
@@ -276,7 +285,7 @@ export default function SettingsPage() {
                 </Notice>
               )}
               <div className="mt-6">
-                <Button variant="secondary" loading={reindexing || reindex.isPending} onClick={() => setConfirm("reindex")}>
+                <Button variant="secondary" disabled={readOnly} loading={reindexing || reindex.isPending} onClick={() => setConfirm("reindex")}>
                   {!reindexing && <RefreshCw size={14} aria-hidden="true" />}
                   {reindexing ? "Re-indexing…" : "Reindex knowledge"}
                 </Button>
@@ -298,8 +307,8 @@ export default function SettingsPage() {
             <label htmlFor="rename" className="sr-only">
               Display name
             </label>
-            <input id="rename" value={name} onChange={(e) => setName(e.target.value)} className="cs-underline-input h-10 flex-1 text-[14px]" />
-            <Button type="submit" variant="secondary" loading={rename.isPending} disabled={!name.trim() || name.trim() === repository.name}>
+            <input id="rename" value={name} onChange={(e) => setName(e.target.value)} disabled={readOnly} className="cs-underline-input h-10 flex-1 text-[14px]" />
+            <Button type="submit" variant="secondary" loading={rename.isPending} disabled={readOnly || !name.trim() || name.trim() === repository.name}>
               Save name
             </Button>
           </form>
@@ -320,6 +329,7 @@ export default function SettingsPage() {
               <Button
                 size="sm"
                 variant="secondary"
+                disabled={readOnly}
                 loading={refresh.isPending}
                 onClick={() => refresh.mutate(repositoryId, { onSuccess: (w) => setNotice(`File scan refreshed · ${w.total_files} files, ${w.folder_count} folders.`) })}
               >
@@ -332,7 +342,7 @@ export default function SettingsPage() {
                 <div className="text-[14.5px] font-semibold">Reset index</div>
                 <p className="text-small text-text-secondary">Wipes symbols, relationships, chunks and vectors. Keeps the clone.</p>
               </div>
-              <Button size="sm" variant="danger-ghost" disabled={!isReady} onClick={() => setConfirm("reset")}>
+              <Button size="sm" variant="danger-ghost" disabled={!isReady || readOnly} onClick={() => setConfirm("reset")}>
                 Reset
               </Button>
             </div>
@@ -373,18 +383,20 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        <section className="mt-8 border-t border-danger/45 pt-7" aria-labelledby="dzh">
-          <h2 id="dzh" className="font-sans text-[17px] font-semibold text-danger">
-            Danger zone
-          </h2>
-          <p className="mt-2 text-small text-text-secondary">
-            Deletes this repository&rsquo;s local index — metadata, vectors, cached data. The original GitHub source is never touched.
-          </p>
-          <Button variant="danger-ghost" className="mt-4" onClick={() => setDeleting(true)}>
-            <Trash2 size={14} aria-hidden="true" />
-            Delete repository
-          </Button>
-        </section>
+        {!readOnly && (
+          <section className="mt-8 border-t border-danger/45 pt-7" aria-labelledby="dzh">
+            <h2 id="dzh" className="font-sans text-[17px] font-semibold text-danger">
+              Danger zone
+            </h2>
+            <p className="mt-2 text-small text-text-secondary">
+              Deletes this repository&rsquo;s local index — metadata, vectors, cached data. The original GitHub source is never touched.
+            </p>
+            <Button variant="danger-ghost" className="mt-4" onClick={() => setDeleting(true)}>
+              <Trash2 size={14} aria-hidden="true" />
+              Delete repository
+            </Button>
+          </section>
+        )}
         <p className="mt-9 text-small text-text-tertiary">
           There&rsquo;s no &ldquo;pull latest from GitHub&rdquo;: clones are never updated. To index newer code, delete and re-add the repository.
         </p>

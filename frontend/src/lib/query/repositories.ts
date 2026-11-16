@@ -33,8 +33,12 @@ export function useCreateRepository() {
   return useMutation({
     mutationFn: (payload: RepositoryCreateRequest) => repositoriesApi.create(payload),
     // Always re-fetch: a failed clone (502) still persists a FAILED row, and
-    // a client-side timeout can leave a clone that later completes.
-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.repositories() }),
+    // a client-side timeout can leave a clone that later completes. The
+    // quota ("1 of 1 repositories used") changes either way.
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.repositories() });
+      void client.invalidateQueries({ queryKey: queryKeys.me() });
+    },
   });
 }
 
@@ -42,7 +46,10 @@ export function useDeleteRepository() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => repositoriesApi.delete(id),
-    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.repositories() }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.repositories() });
+      void client.invalidateQueries({ queryKey: queryKeys.me() }); // frees a repository slot
+    },
   });
 }
 

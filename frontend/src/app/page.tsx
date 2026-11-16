@@ -4,15 +4,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowRight, Plus, Trash2 } from "lucide-react";
+import { GuestBanner } from "@/components/auth/GuestBanner";
 import { TopologyMark } from "@/components/devices/TopologyMark";
 import { DeleteRepositoryDialog } from "@/components/domain/DeleteRepositoryDialog";
 import { RepoStatusChip } from "@/components/domain/RepoStatusChip";
 import { TopBar } from "@/components/nav/TopBar";
 import { Button } from "@/components/ui/Button";
 import { EmptyState, ErrorPanel, Notice } from "@/components/state/StateVocabulary";
+import { useAuth } from "@/context/AuthContext";
 import { ApiError } from "@/lib/api/client";
+import { demoQuestions } from "@/lib/demo";
 import { useCreateRepository, useRepositories } from "@/lib/query/repositories";
-import type { Repository } from "@/lib/types/repository";
+import { isRepositoryReady, type Repository } from "@/lib/types/repository";
 import { formatRelativeTime } from "@/lib/utils";
 
 const SAMPLES = ["https://github.com/miguelgrinberg/microblog", "https://github.com/pallets/itsdangerous"];
@@ -25,6 +28,14 @@ function importErrorCopy(err: unknown): { title: string; hint: string } {
     return {
       title: "Still cloning — the request timed out",
       hint: "Cloning and the file scan run inside the request. Large repositories can take longer than the client waits; the list refreshes and the repository appears once the clone finishes.",
+    };
+  if (err.code === "GUEST_QUOTA_EXCEEDED")
+    return { title: "Guest limit reached", hint: "Sign in with GitHub to index more repositories — the one you already indexed is kept." };
+  if (err.code === "RATE_LIMITED") return { title: "Limit reached for now", hint: err.message };
+  if (err.status === 413)
+    return {
+      title: "That repository is too large for guest sessions",
+      hint: "Guests can index smaller repositories. Sign in with GitHub to index larger ones.",
     };
   if (err.status === 502)
     return {
@@ -39,6 +50,7 @@ export default function RepositoriesPage() {
   const router = useRouter();
   const repos = useRepositories();
   const create = useCreateRepository();
+  const { isGuest, quota, openSignIn } = useAuth();
   const [githubUrl, setGithubUrl] = useState("");
   const [name, setName] = useState("");
   const [toDelete, setToDelete] = useState<Repository | null>(null);
@@ -54,8 +66,7 @@ export default function RepositoriesPage() {
   }, [create.isPending]);
 
   // Keep chips live while any repository is still indexing.
-  const anyIndexing = repos.data?.repositories.some((r) => r.indexing_status === "indexing" || r.status === "cloning");
-  useEffect(() => {
+  const anyIndexing = repos.data?.repositories.some((r) => r.indexing_status === "indexing" || r.status === "cloning");  useEffect(() => {
     if (!anyIndexing) return;
     const iv = setInterval(() => repos.refetch(), 3_000);
     return () => clearInterval(iv);
@@ -78,13 +89,18 @@ export default function RepositoriesPage() {
     );
   }
 
-  const list = repos.data?.repositories ?? [];
+  const allRepos = repos.data?.repositories ?? [];
+  const demo = allRepos.find((r) => r.is_demo);
+  const list = allRepos.filter((r) => !r.is_demo); // the demo has its own card below
+  // A guest who has used their free repository can't add another until they sign in.
+  const locked = isGuest && quota !== undefined && quota.repositories_used >= quota.repositories_limit;
   const errCopy = create.isError ? importErrorCopy(create.error) : null;
   const existing = create.error instanceof ApiError && create.error.status === 409 ? list.find((r) => r.github_url === githubUrl.trim()) : undefined;
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <TopBar />
+      <GuestBanner />
       <main className="cs-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="cs-page cs-page-glow">
           <TopologyMark variant="watermark" />
@@ -126,11 +142,24 @@ export default function RepositoriesPage() {
                   />
                 </label>
               </div>
-              <Button type="submit" variant="primary" loading={create.isPending} disabled={!githubUrl.trim()}>
+              <Button type="submit" variant="primary" loading={create.isPending} disabled={!githubUrl.trim() || locked}>
                 {!create.isPending && <Plus size={15} aria-hidden="true" />}
                 {create.isPending ? "Cloning and scanning…" : "Add repository"}
               </Button>
             </form>
+            {locked && (
+              <Notice
+                title="You've used your free repository"
+                className="mt-4"
+                actions={
+                  <Button size="sm" variant="primary" onClick={() => openSignIn()}>
+                    Continue with GitHub
+                  </Button>
+                }
+              >
+                Sign in to keep it and index more. You can still explore it and the demo below.
+              </Notice>
+            )}
             <div aria-live="polite">
               {create.isPending && (
                 <div className="flex items-center gap-3 pt-3 font-mono text-[12px] text-text-secondary">
@@ -159,6 +188,38 @@ export default function RepositoriesPage() {
                 </Notice>
               )}
             </div>
+
+            {demo && (
+              <section aria-label="Try the demo" className="mt-10 border-t border-border-subtle pt-7">
+                <p className="cs-mono-label">Try it now · nothing to set up</p>
+                <div className="mt-3 flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+                  <div className="min-w-0">
+                    <Link
+                      href={`/r/${demo.id}`}
+                      className="rounded font-display text-[22px] italic text-text-primary hover:text-[var(--cs-accent-violet-hover)]"
+                    >
+                      {demo.name}
+                    </Link>
+                    <p className="mt-1 text-small text-text-secondary">
+                      Already indexed — explore its graph and ask questions, no import needed.
+                    </p>
+                  </div>
+                  <Link href={`/r/${demo.id}`} className="cs-link">
+                    Explore the demo <ArrowRight size={13} aria-hidden="true" />
+                  </Link>
+                </div>
+                {isRepositoryReady(demo) && (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <span className="text-small text-text-tertiary">Ask:</span>
+                    {demoQuestions(demo.github_url).map((q) => (
+                      <Link key={q} href={`/r/${demo.id}/ask?q=${encodeURIComponent(q)}`} className="cs-chipbtn">
+                        {q}
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
 
             <div className="mt-12 flex items-baseline justify-between">
               <p className="cs-mono-label">

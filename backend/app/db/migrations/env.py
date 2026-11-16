@@ -20,7 +20,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database.async_dsn)
+# Migrations use MIGRATION_DATABASE_URL (a direct, non-pooled endpoint) when it is set.
+_prepared = get_settings().database.prepared(migration=True)
+# ConfigParser treats '%' as interpolation syntax, and a URL-encoded password is full of them.
+config.set_main_option("sqlalchemy.url", _prepared.url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 
@@ -52,6 +55,7 @@ async def run_migrations_online() -> None:
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
+        connect_args=_prepared.connect_args,
     )
 
     async with connectable.connect() as connection:

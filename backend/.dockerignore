@@ -22,8 +22,13 @@ env/
 .git/
 .gitignore
 
+# ===== Local runtime data (clones, model cache, logs) — never part of an image =====
+data/
+logs/
+
 # ===== Docker =====
 Dockerfile
+Dockerfile.hosted
 .dockerignore
 
 # ===== Docs / misc =====

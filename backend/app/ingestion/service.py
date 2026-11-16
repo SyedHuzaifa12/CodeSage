@@ -13,15 +13,20 @@ repository facts — matching CLAUDE.md §3's documented data flow
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
 
 from fastapi import Depends
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import get_db
 from app.db.qdrant import get_qdrant_client
+from app.indexing.notify import is_postgres_backend
+from app.indexing.service import cancel_job, enqueue_job
 from app.ingestion import repository as ingestion_db
 from app.ingestion.exceptions import (
     IndexingAlreadyInProgressError,
@@ -115,7 +120,8 @@ class WorkspaceService:
             raise WorkspaceScanError(workspace.error_message)
 
         try:
-            scan_result = scan_directory(local_path)
+            # In a thread: the directory walk is blocking filesystem work.
+            scan_result = await asyncio.to_thread(scan_directory, local_path)
         except Exception as exc:
             workspace.status = "failed"
             workspace.error_message = str(exc)
@@ -317,6 +323,20 @@ class WorkspaceService:
         repository.indexing_progress = 0
         repository.error_message = None
         await repository_db.save(self._session, repository)
+
+        if is_postgres_backend():
+            # Queue-backed mode (ADR-028): the job row is the dispatch. The caller wakes the indexer
+            # once this has committed. The partial unique index makes a duplicate trigger impossible,
+            # even for two requests racing past the status check above.
+            try:
+                await enqueue_job(self._session, repository_id, "full_index")
+            except IndexingAlreadyInProgressError:
+                await self._session.rollback()
+                raise
+            await self._session.commit()
+            logger.info("Repository %s indexing queued", repository_id)
+            return workspace
+
         # Committed explicitly, here, rather than left to get_db()'s
         # end-of-request commit: the Celery task dispatched right after
         # this uses its OWN session and immediately writes to this same
@@ -363,6 +383,22 @@ class WorkspaceService:
             NoIndexingInProgressError: If no indexing run is currently in flight.
         """
         repository = await self._get_repository(repository_id)
+
+        if is_postgres_backend():
+            # A queued job is simply withdrawn; a running one stops at its next stage boundary.
+            # A repository still cloning can be cancelled too (the clone is part of the job).
+            cloning = repository.status in ("pending", "cloning")
+            if repository.indexing_status != "indexing" and not cloning:
+                raise NoIndexingInProgressError(
+                    f"Repository '{repository_id}' has no indexing run in progress (status={repository.indexing_status})."
+                )
+            await cancel_job(self._session, repository_id)
+            # Committed on its own, first: the indexer reads the job row from another process at each
+            # stage boundary, and this must be visible to it before anything below can block.
+            await self._session.commit()
+            logger.info("Repository %s indexing job CANCELLED (queue)", repository_id)
+            return await self._mark_cancelled(repository_id, cloning)
+
         if repository.indexing_status != "indexing":
             raise NoIndexingInProgressError(
                 f"Repository '{repository_id}' has no indexing run in progress (status={repository.indexing_status})."
@@ -392,6 +428,37 @@ class WorkspaceService:
         logger.info("Repository %s indexing CANCELLED", repository_id)
 
         return repository
+
+    async def _mark_cancelled(self, repository_id: uuid.UUID, cloning: bool) -> Repository:
+        """Record the cancellation on the repository row without ever hanging the request.
+
+        A running indexing job holds a lock on the repository row until its transaction ends, so a
+        plain UPDATE here would block until the job's next stage boundary (or its end). Instead the
+        update waits briefly and, if the row is busy, leaves it to the indexer: it stops at its next
+        stage boundary and writes the same state itself. The caller is told ``failed`` either way.
+        """
+        try:
+            await self._session.execute(text("SET LOCAL lock_timeout = '1500ms'"))
+            repository = await self._get_repository(repository_id)
+            if cloning:
+                repository.status = "failed"
+            repository.indexing_status = "failed"
+            repository.error_message = "Indexing was cancelled by request."
+            await repository_db.save(self._session, repository)
+            await self._session.commit()
+            return repository
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "55P03":  # lock_not_available; anything else is a real error
+                raise
+            await self._session.rollback()
+            logger.info("Repository %s row is busy; the indexer will record the cancellation at its next stage boundary", repository_id)
+            repository = await self._get_repository(repository_id)
+            self._session.expunge(repository)  # a read-only copy: it must not be flushed back (that would block again)
+            if cloning:
+                repository.status = "failed"
+            repository.indexing_status = "failed"
+            repository.error_message = "Indexing was cancelled by request."
+            return repository
 
 
 def get_workspace_service(session: AsyncSession = Depends(get_db)) -> WorkspaceService:
