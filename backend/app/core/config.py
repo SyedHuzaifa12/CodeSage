@@ -656,6 +656,16 @@ class Settings:
         problems: list[str] = []
         if "*" in self.app.allowed_hosts_list:
             problems.append("ALLOWED_HOSTS must list your real hostnames, not '*' (e.g. 'myapi.onrender.com').")
+        host = self.redis.redis_host
+        labels = host.split(".")
+        if not host or any(c in host for c in (chr(58), chr(47), chr(64), chr(32), chr(9), chr(10))) or any(
+            not 1 <= len(label) <= 63 for label in labels
+        ):
+            # Deliberately not echoed: a misplaced value is often the password/token itself.
+            problems.append(
+                "REDIS_HOST must be just a hostname (e.g. 'something.upstash.io'): no scheme, port, password or spaces; "
+                "put the token in REDIS_PASSWORD and the number in REDIS_PORT."
+            )
         try:
             self.database.prepared()
         except ValueError as exc:
