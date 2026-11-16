@@ -141,6 +141,40 @@ class RedisSettings(BaseSettings):
             return value.strip() or None
         return value
 
+    @field_validator("redis_host", mode="before")
+    @classmethod
+    def _trim_host(cls, value):
+        """A pasted hostname often carries a trailing space/newline or wrapping quotes; those are never meant."""
+        if isinstance(value, str):
+            return value.strip().strip("\"'").strip()
+        return value
+
+    def host_problems(self) -> list[str]:
+        """Describe, in words and without quoting the value, why ``redis_host`` is not a plain hostname."""
+        host = self.redis_host
+        reasons: list[str] = []
+        if not host:
+            return ["it is empty"]
+        if "://" in host:
+            reasons.append("it starts with a scheme such as rediss:// (remove it)")
+        if "@" in host:
+            reasons.append("it contains '@', so it looks like a full connection URL with a password in it")
+        if ":" in host.replace("://", ""):
+            reasons.append("it contains ':', so it looks like it has a port attached")
+        if "/" in host.replace("://", ""):
+            reasons.append("it contains '/'")
+        if any(c.isspace() for c in host):
+            reasons.append("it contains a space or line break")
+        longest = max(len(label) for label in host.split("."))
+        if longest > 63:
+            reasons.append(
+                f"it has a part {longest} characters long, but hostname parts are at most 63 "
+                "(a token or a whole URL pasted here would look like this)"
+            )
+        if any(label == "" for label in host.split(".")):
+            reasons.append("it has an empty part (a leading, trailing or doubled dot)")
+        return reasons
+
 
 class CelerySettings(BaseSettings):
     """Celery broker/backend/worker configuration (ADR-026).
@@ -656,15 +690,12 @@ class Settings:
         problems: list[str] = []
         if "*" in self.app.allowed_hosts_list:
             problems.append("ALLOWED_HOSTS must list your real hostnames, not '*' (e.g. 'myapi.onrender.com').")
-        host = self.redis.redis_host
-        labels = host.split(".")
-        if not host or any(c in host for c in (chr(58), chr(47), chr(64), chr(32), chr(9), chr(10))) or any(
-            not 1 <= len(label) <= 63 for label in labels
-        ):
-            # Deliberately not echoed: a misplaced value is often the password/token itself.
+        reasons = self.redis.host_problems()
+        if reasons:
+            # The value itself is never printed: a misplaced value is often the password/token.
             problems.append(
-                "REDIS_HOST must be just a hostname (e.g. 'something.upstash.io'): no scheme, port, password or spaces; "
-                "put the token in REDIS_PASSWORD and the number in REDIS_PORT."
+                "REDIS_HOST must be just a hostname such as 'something.upstash.io' (put the token in REDIS_PASSWORD and "
+                "the port in REDIS_PORT). Yours is wrong because: " + "; ".join(reasons) + "."
             )
         try:
             self.database.prepared()
