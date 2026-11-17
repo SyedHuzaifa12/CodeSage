@@ -1,157 +1,218 @@
 "use client";
 
 import "@xyflow/react/dist/style.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Background, Controls, MarkerType, MiniMap, ReactFlow, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
-import { CsGraphEdge, CsGraphNode, NODE_WIDTH, type CsGraphEdgeData, type CsGraphNodeData } from "@/components/graph/GraphNode";
-import { forceLayout, nodeRadius } from "@/lib/forceLayout";
-import { edgeKey, neighborsOf, nodeLabel, sharedPrefixDepth, type GraphModel } from "@/lib/graphModel";
+import {
+  AggregateEdge,
+  GroupNode,
+  MoreNode,
+  ModuleNode,
+  type AggregateEdgeData,
+  type GroupNodeData,
+  type MoreNodeData,
+  type ModuleNodeData,
+  type Relation,
+} from "@/components/graph/GraphNode";
+import type { LayoutResult } from "@/lib/graph/layout";
+import { moduleViewId, type GraphData, type GraphView } from "@/lib/graph/model";
 
-const nodeTypes = { cs: CsGraphNode };
-const edgeTypes = { cs: CsGraphEdge };
-const W = 1200;
-const H = 860;
+// Declared once at module scope: React Flow re-creates every node if these objects change identity between renders.
+// "group" is avoided on purpose: React Flow gives that exact type name its own default border and background.
+const nodeTypes = { module: ModuleNode, folder: GroupNode, more: MoreNode };
+const edgeTypes = { aggregate: AggregateEdge };
 
-/**
- * Interactive knowledge map (React Flow). Positions come from the
- * deterministic force layout over the capped model; selection, hover
- * neighbourhood highlighting and arrow-key neighbour navigation are all
- * driven from here.
- */
-export function GraphCanvas({
-  model,
-  mode,
-  hotspots,
-  orphans,
-  cycleKeys,
-  selected,
-  onSelect,
-  layoutKey,
-}: {
-  model: GraphModel;
-  mode: "dependency" | "call";
-  hotspots: Set<string>;
-  orphans: Set<string>;
-  cycleKeys: Set<string>;
+/** key: arrows into shared hub modules are left out until one end is selected; all: every arrow; selected: only the selection's. */
+export type EdgeMode = "key" | "all" | "selected";
+
+export interface GraphCanvasProps {
+  data: GraphData;
+  view: GraphView;
+  layout: LayoutResult;
+  /** module id -> index of the circular-dependency knot it is part of. */
+  tangleOf: ReadonlyMap<string, number>;
+  hotspots: ReadonlySet<string>;
+  entries: ReadonlySet<string>;
+  /** Draw the selected module's loop (marks and red dashes). Off for a huge loop, where it would mark most of the map. */
+  loopMarks: boolean;
   selected: string | null;
-  onSelect: (id: string | null) => void;
-  layoutKey: string;
-}) {
-  const [hover, setHover] = useState<string | null>(null);
+  edgeMode: EdgeMode;
+  onSelect: (moduleId: string | null) => void;
+  onToggleGroup: (groupId: string) => void;
+  onShowMore: (groupId: string) => void;
+  /** Changing this re-frames the whole picture (a new repository or graph type). */
+  fitKey: string;
+  /** Asks the canvas to bring one module into view (a search result, a click in the inspector). */
+  reveal: { moduleId: string; n: number } | null;
+}
+
+/** Offset of a node from the top-left of the whole picture (layout positions are relative to the parent box). */
+function absolutePositions(view: GraphView, layout: LayoutResult) {
+  const parent = new Map(view.nodes.map((n) => [n.id, n.parent]));
+  const out = new Map<string, { x: number; y: number; width: number; height: number }>();
+  const resolve = (id: string): { x: number; y: number; width: number; height: number } | null => {
+    const hit = out.get(id);
+    if (hit) return hit;
+    const p = layout.positions[id];
+    if (!p) return null;
+    const par = parent.get(id);
+    const base = par ? resolve(par) : { x: 0, y: 0 };
+    if (!base) return null;
+    const abs = { x: base.x + p.x, y: base.y + p.y, width: p.width, height: p.height };
+    out.set(id, abs);
+    return abs;
+  };
+  for (const n of view.nodes) resolve(n.id);
+  return out;
+}
+
+export function GraphCanvas({ data, view, layout, tangleOf, hotspots, entries, loopMarks, selected, edgeMode, onSelect, onToggleGroup, onShowMore, fitKey, reveal }: GraphCanvasProps) {
   const flow = useRef<ReactFlowInstance | null>(null);
-  const positions = useMemo(() => forceLayout(model.nodes, model.edges, { width: W, height: H, iterations: 420, key: layoutKey }), [model, layoutKey]);
-  const pos = useMemo(() => new Map(model.nodes.map((n, i) => [n, positions[i]])), [model.nodes, positions]);
-  const maxDegree = Math.max(1, ...model.nodes.map((n) => model.degree.get(n) ?? 0));
-  const radius = useCallback((n: string) => nodeRadius(model.degree.get(n) ?? 0, maxDegree), [model, maxDegree]);
-  const prefixDepth = useMemo(() => sharedPrefixDepth(model.nodes), [model.nodes]);
-  const focus = hover ?? selected;
-  const near = useMemo(() => (focus ? neighborsOf(model.edges, focus) : null), [focus, model.edges]);
-  const activate = useCallback((id: string) => onSelect(id === selected ? null : id), [onSelect, selected]);
+  const lastFit = useRef<string | null>(null);
+  const lastReveal = useRef<number>(0);
 
-  const nodes: Node<CsGraphNodeData>[] = useMemo(
-    () =>
-      model.nodes.map((n) => {
-        const p = pos.get(n)!;
-        const r = radius(n);
-        return {
-          id: n,
-          type: "cs",
-          position: { x: p.x - NODE_WIDTH / 2, y: p.y - r - 10 },
-          width: NODE_WIDTH,
-          height: r * 2 + 34,
-          draggable: false,
-          selectable: false,
-          focusable: false,
-          data: {
-            id: n,
-            label: nodeLabel(n, mode, prefixDepth),
-            radius: r,
-            inDegree: model.inDegree.get(n) ?? 0,
-            outDegree: model.outDegree.get(n) ?? 0,
-            hotspot: mode === "dependency" && hotspots.has(n),
-            orphan: mode === "dependency" && orphans.has(n),
-            selected: n === selected,
-            dim: Boolean(focus && n !== focus && !near?.has(n)),
-            hub: (model.degree.get(n) ?? 0) >= maxDegree * 0.45,
-            onActivate: activate,
-            onHover: setHover,
-          },
-        };
-      }),
-    [model, pos, radius, mode, prefixDepth, hotspots, orphans, selected, focus, near, maxDegree, activate],
-  );
+  const abs = useMemo(() => absolutePositions(view, layout), [view, layout]);
+  const selectedId = selected ? moduleViewId(selected) : null;
+  const drawn = useMemo(() => new Set(view.nodes.map((n) => n.id)), [view.nodes]);
+  const selectedDrawn = selectedId !== null && drawn.has(selectedId);
 
-  const edges: Edge<CsGraphEdgeData>[] = useMemo(() => {
-    const keys = new Set(model.edges.map(edgeKey));
-    return model.edges.map((e) => {
-      const cycle = mode === "dependency" && cycleKeys.has(edgeKey(e));
-      const active = Boolean(focus && (e.source === focus || e.target === focus));
-      const color = cycle ? "var(--cs-danger)" : active ? "var(--cs-accent-violet)" : "oklch(var(--cs-ov) 0 0 / 0.32)";
-      return {
-        id: edgeKey(e),
-        source: e.source,
-        target: e.target,
-        type: "cs",
-        focusable: false,
-        selectable: false,
-        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
-        data: {
-          sourceRadius: radius(e.source),
-          targetRadius: radius(e.target),
-          cycle,
-          active,
-          dim: Boolean(focus && !active),
-          bend: keys.has(`${e.target}→${e.source}`) ? 26 : 0,
-        },
+  // Everything the selection touches, and which way: it imports them ("imports") or they import it ("importedBy").
+  const relation = useMemo(() => {
+    const m = new Map<string, Relation>();
+    if (!selectedDrawn) return m;
+    for (const e of [...view.edges, ...view.hubEdges]) {
+      if (e.source === selectedId) m.set(e.target, "imports");
+      else if (e.target === selectedId) m.set(e.source, "importedBy");
+    }
+    return m;
+  }, [view.edges, view.hubEdges, selectedId, selectedDrawn]);
+
+  const ancestors = useMemo(() => {
+    const set = new Set<string>();
+    if (!selectedDrawn) return set;
+    const parent = new Map(view.nodes.map((n) => [n.id, n.parent]));
+    for (let p = parent.get(selectedId!); p; p = parent.get(p)) set.add(p);
+    return set;
+  }, [view.nodes, selectedId, selectedDrawn]);
+
+  const selectedTangle = loopMarks && selected ? tangleOf.get(selected) ?? null : null;
+  const nodes: Node[] = useMemo(() => {
+    const focusing = selectedDrawn;
+    return view.nodes.flatMap((n): Node[] => {
+      const p = layout.positions[n.id];
+      if (!p) return [];
+      const base = { id: n.id, position: { x: p.x, y: p.y }, width: p.width, height: p.height, parentId: n.parent ?? undefined, draggable: false, selectable: false, focusable: false };
+      if (n.kind === "group") {
+        const related = relation.has(n.id) || ancestors.has(n.id) || n.id === selectedId;
+        const data: GroupNodeData = { groupId: n.groupId, label: n.label, expanded: n.expanded, moduleCount: n.moduleCount, dim: focusing && !n.expanded && !related, onToggle: onToggleGroup };
+        return [{ ...base, type: "folder", data }];
+      }
+      if (n.kind === "more") {
+        const data: MoreNodeData = { groupId: n.groupId, hidden: n.hidden, dim: focusing && !relation.has(n.id), onMore: onShowMore };
+        return [{ ...base, type: "more", data }];
+      }
+      const m = data.byId.get(n.moduleId)!;
+      const data2: ModuleNodeData = {
+        moduleId: m.id,
+        label: n.label,
+        kind: m.kind,
+        usedBy: m.inDegree,
+        hotspot: hotspots.has(m.id),
+        entry: entries.has(m.id),
+        // Loop markers appear only on the members of the loop the selected module is in; on a codebase where most
+        // modules are tangled, marking all of them would say nothing.
+        tangled: selectedTangle !== null && tangleOf.get(m.id) === selectedTangle,
+        selected: n.id === selectedId,
+        relation: relation.get(n.id) ?? null,
+        dim: focusing && n.id !== selectedId && !relation.has(n.id),
+        onSelect: (id) => onSelect(id === selected ? null : id),
       };
+      return [{ ...base, type: "module", data: data2 }];
     });
-  }, [model.edges, mode, cycleKeys, focus, radius]);
+  }, [view.nodes, layout.positions, data.byId, hotspots, entries, tangleOf, selectedTangle, selectedId, selectedDrawn, selected, relation, ancestors, onSelect, onToggleGroup, onShowMore]);
 
-  // Frame the selected node together with its direct neighbours, so the
-  // relationships the inspector lists are on screen (sparse graphs would
-  // otherwise push them out of view at a fixed zoom).
-  const frame = useCallback(
-    (inst: ReactFlowInstance, node: string, duration: number) => {
-      const ids = [node, ...neighborsOf(model.edges, node)].map((id) => ({ id }));
-      inst.fitView({ nodes: ids, padding: 0.35, maxZoom: 1.2, duration });
-    },
-    [model.edges],
-  );
+  const edges: Edge[] = useMemo(() => {
+    const showCount = view.edges.length <= 40;
+    const touches = (e: { source: string; target: string }) => selectedDrawn && (e.source === selectedId || e.target === selectedId);
+    // Hidden hub arrows come back for the selected module, so its full set of connections is always on screen.
+    const list = edgeMode === "key" ? [...view.edges, ...view.hubEdges.filter(touches)] : view.edges;
+    return list.flatMap((e): Edge[] => {
+      const direction: AggregateEdgeData["direction"] = !selectedDrawn ? null : e.source === selectedId ? "out" : e.target === selectedId ? "in" : null;
+      if (edgeMode === "selected" && direction === null) return [];
+      // A loop is only drawn as one when the selected module is part of it: in a codebase where dozens of modules are
+      // tangled, marking every arrow red would mark nearly all of them and say nothing.
+      const loop = e.tangle !== null && e.tangle === selectedTangle;
+      const color = loop ? "var(--cs-danger)" : direction === "in" ? "var(--cs-accent-cyan)" : direction === "out" ? "var(--cs-accent-violet)" : "oklch(var(--cs-ov) 0 0 / 0.34)";
+      const data: AggregateEdgeData = { weight: e.weight, tangled: loop, direction, dim: selectedDrawn && direction === null, showCount };
+      return [
+        {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          type: "aggregate",
+          focusable: false,
+          selectable: false,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
+          data,
+        },
+      ];
+    });
+  }, [view.edges, view.hubEdges, selectedId, selectedDrawn, selectedTangle, edgeMode]);
+
+  const fit = useCallback((duration: number) => flow.current?.fitView({ padding: 0.1, maxZoom: 1.1, duration }), []);
+
+  // Re-frame when the picture is a different one (not on every expand: a viewport that jumps while you are reading is
+  // disorienting). The layout arrives asynchronously, so this waits for positions that match the current view.
   useEffect(() => {
-    if (!selected || !flow.current || !pos.has(selected)) return;
-    frame(flow.current, selected, 280);
-  }, [selected, pos, frame]);
+    if (!flow.current || lastFit.current === fitKey) return;
+    lastFit.current = fitKey;
+    requestAnimationFrame(() => fit(0));
+  }, [fitKey, layout, fit]);
+
+  useEffect(() => {
+    if (!reveal || reveal.n === lastReveal.current || !flow.current) return;
+    const box = abs.get(moduleViewId(reveal.moduleId));
+    if (!box) return;
+    lastReveal.current = reveal.n;
+    const zoom = Math.max(flow.current.getZoom(), 0.9);
+    requestAnimationFrame(() => flow.current?.setCenter(box.x + box.width / 2, box.y + box.height / 2, { zoom, duration: 300 }));
+  }, [reveal, abs]);
 
   function onKeyDown(e: React.KeyboardEvent) {
-    const dir: Record<string, [number, number]> = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
     if (e.key === "Escape") {
       onSelect(null);
       return;
     }
-    const v = dir[e.key];
-    if (!v) return;
+    if (!["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key)) return;
     const current = (e.target as HTMLElement).closest<HTMLElement>("[data-graph-node]")?.dataset.graphNode;
     if (!current) return;
+    const from = moduleViewId(current);
+    const here = abs.get(from);
+    if (!here) return;
     e.preventDefault();
-    const a = pos.get(current)!;
-    const candidates = [...(neighborsOf(model.edges, current).size ? neighborsOf(model.edges, current) : new Set(model.nodes.filter((n) => n !== current)))];
+    // Down follows an import to what it imports; up goes back to what imports it; left and right move along the row.
+    let pool: string[];
+    if (e.key === "ArrowDown") pool = view.edges.filter((x) => x.source === from).map((x) => x.target);
+    else if (e.key === "ArrowUp") pool = view.edges.filter((x) => x.target === from).map((x) => x.source);
+    else pool = view.nodes.filter((n) => n.kind === "module" && n.id !== from && Math.abs((abs.get(n.id)?.y ?? 1e9) - here.y) < here.height).map((n) => n.id);
     let best: string | null = null;
     let bestScore = Infinity;
-    for (const c of candidates) {
-      const b = pos.get(c)!;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const along = dx * v[0] + dy * v[1];
-      if (along <= 0) continue;
-      const score = along + Math.abs(dx * v[1] - dy * v[0]) * 2.2;
+    for (const id of pool) {
+      const b = abs.get(id);
+      if (!b || !id.startsWith("m:")) continue;
+      const dx = b.x - here.x;
+      if (e.key === "ArrowLeft" && dx >= 0) continue;
+      if (e.key === "ArrowRight" && dx <= 0) continue;
+      const score = e.key === "ArrowLeft" || e.key === "ArrowRight" ? Math.abs(dx) : Math.abs(dx) + Math.abs(b.y - here.y) * 0.2;
       if (score < bestScore) {
         bestScore = score;
-        best = c;
+        best = id;
       }
     }
     if (best) {
-      document.querySelector<HTMLElement>(`[data-graph-node="${CSS.escape(best)}"]`)?.focus();
-      onSelect(best);
+      const id = best.slice(2);
+      document.querySelector<HTMLElement>(`[data-graph-node="${CSS.escape(id)}"]`)?.focus();
+      onSelect(id);
     }
   }
 
@@ -164,31 +225,35 @@ export function GraphCanvas({
         edgeTypes={edgeTypes}
         onInit={(inst) => {
           flow.current = inst as unknown as ReactFlowInstance;
-          if (selected && pos.has(selected)) requestAnimationFrame(() => frame(inst as unknown as ReactFlowInstance, selected, 0));
         }}
-        onNodeClick={(_e, node) => activate(node.id)}
         onPaneClick={() => onSelect(null)}
+        // The boxes handle their own clicks. React Flow switches pointer events off for nodes that are neither selectable,
+        // draggable nor given a click handler, so a no-op handler is what keeps the buttons inside them clickable.
+        onNodeClick={() => undefined}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
         nodesFocusable={false}
         edgesFocusable={false}
+        onlyRenderVisibleElements={nodes.length > 160}
         fitView
-        fitViewOptions={{ padding: 0.12 }}
-        minZoom={0.25}
-        maxZoom={2.5}
+        fitViewOptions={{ padding: 0.1, maxZoom: 1.1 }}
+        minZoom={0.1}
+        maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        aria-label="Dependency map"
       >
-        <Background color="oklch(var(--cs-ov) 0 0 / 0.055)" gap={24} size={1.2} />
+        <Background color="oklch(var(--cs-ov) 0 0 / 0.07)" gap={24} size={1.2} />
         <Controls showInteractive={false} position="bottom-left" />
         <MiniMap
           pannable
           zoomable
           position="bottom-right"
-          nodeColor={(n) => ((n.data as CsGraphNodeData).hotspot ? "oklch(0.75 0.13 300)" : "oklch(var(--cs-ov) 0 0 / 0.45)")}
+          ariaLabel="Overview of the whole map"
+          nodeColor={(n) => (n.type === "folder" ? "oklch(var(--cs-ov) 0 0 / 0.12)" : "oklch(var(--cs-ov) 0 0 / 0.42)")}
           nodeStrokeWidth={0}
           maskColor="var(--cs-minimap-mask)"
-          style={{ background: "var(--cs-glass)", width: 170, height: 120 }}
+          style={{ background: "var(--cs-glass)", width: 150, height: 100 }}
         />
       </ReactFlow>
     </div>
