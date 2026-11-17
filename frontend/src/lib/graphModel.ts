@@ -36,6 +36,13 @@ export function flattenTreeFiles(nodes: TreeNode[] | undefined): TreeNode[] {
   return out;
 }
 
+/**
+ * Files the backend parses into the graph (mirrors the parsers' `file_extensions`). A project file such as `pytest.ini` or
+ * `setup.cfg` has a module-like name too, and must not make the library `pytest` look like part of the project.
+ */
+const PARSED_EXTENSIONS = /\.(py|pyi|js|jsx|mjs|cjs|ts|tsx|java)$/i;
+export const isParsedSourceFile = (path: string) => PARSED_EXTENSIONS.test(path);
+
 /** module path -> file path, built from the real file list. */
 export function buildModuleIndex(filePaths: Iterable<string>): Map<string, string> {
   const index = new Map<string, string>();
