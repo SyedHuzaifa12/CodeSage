@@ -35,7 +35,7 @@ function ContextAperture({ candidates, items, files }: { candidates: number; ite
     [items, "evidence items"],
     [files, "files in context"],
   ];
-  const fills = ["oklch(1 0 0 / .08)", "oklch(0.75 0.13 300 / .24)", "oklch(0.75 0.13 300 / .6)"];
+  const fills = ["oklch(var(--cs-ov) 0 0 / .08)", "oklch(0.75 0.13 300 / .24)", "oklch(0.75 0.13 300 / .6)"];
   return (
     <svg viewBox="0 0 260 136" className="mb-1.5 mt-3 block h-auto w-full" role="img" aria-label={`${candidates} retrieval candidates narrowed to ${items} evidence items from ${files} files`}>
       {widths.map((w, i) => {
@@ -46,10 +46,10 @@ function ContextAperture({ candidates, items, files }: { candidates: number; ite
             <path
               d={`M${cx - w / 2} ${y} L${cx + w / 2} ${y} L${cx + w2 / 2} ${y + H} L${cx - w2 / 2} ${y + H} Z`}
               fill={fills[i]}
-              stroke={i === 2 ? "var(--cs-accent-violet)" : "oklch(1 0 0 / .14)"}
+              stroke={i === 2 ? "var(--cs-accent-violet)" : "oklch(var(--cs-ov) 0 0 / .14)"}
               style={{ transformBox: "fill-box", transformOrigin: "center top", animation: `cs-fade-in 600ms var(--cs-ease-out) ${i * 120}ms both` }}
             />
-            <line x1={cx + w / 2 + 6} y1={y + H / 2} x2={128} y2={y + H / 2} stroke="oklch(1 0 0 / .12)" strokeDasharray="1.5 3" />
+            <line x1={cx + w / 2 + 6} y1={y + H / 2} x2={128} y2={y + H / 2} stroke="oklch(var(--cs-ov) 0 0 / .12)" strokeDasharray="1.5 3" />
             <text x={136} y={y + 14} fontFamily="var(--font-plex-mono)" fontSize={15} fontWeight={500} fill={i === 2 ? "var(--cs-accent-violet)" : "var(--cs-text-primary)"}>
               {labels[i][0]}
             </text>
@@ -95,7 +95,7 @@ function EvidenceItem({
         aria-expanded={open}
         className={cn(
           "block w-full rounded-[8px] border border-transparent border-l-2 px-3 py-2.5 text-left transition-colors",
-          (open || hovered) && "border-border-subtle border-l-violet bg-[linear-gradient(90deg,oklch(0.2_0.012_280),oklch(0.175_0.009_280))]",
+          (open || hovered) && "border-border-subtle border-l-violet bg-surface-2",
         )}
       >
         <div className="break-all font-mono text-[11.5px] font-medium leading-snug text-text-primary">
@@ -175,11 +175,11 @@ export function EvidenceRail({
     return (
       <div className="flex flex-col">
         <section>
-          <p className="cs-mono-label">Evidence</p>
+          <p className="text-[13px] font-semibold text-text-primary">Sources</p>
           <p className="mt-2 text-small text-text-secondary">
             When you ask, the evidence CodeSage retrieved appears here — every claim in an answer traces back to a file, symbol and line range.
           </p>
-          <ol className="mt-3 grid list-none gap-2.5 p-0 font-mono text-[11.5px] text-text-tertiary">
+          <ol className="mt-3 grid list-none gap-2.5 p-0 text-[13px] leading-snug text-text-secondary">
             {STAGE_DESCRIPTIONS.map((s) => (
               <li key={s} className="grid grid-cols-[14px_1fr] gap-2">
                 <i className="mt-[5px] h-[7px] w-[7px] rounded-full border-[1.5px] border-current" aria-hidden="true" />
@@ -201,7 +201,7 @@ export function EvidenceRail({
     return (
       <section>
         <p className="cs-mono-label">{turn.status === "error" ? "Pipeline stopped" : "Working"}</p>
-        <ol className="mt-3 grid list-none gap-2.5 p-0 font-mono text-[11.5px] text-text-tertiary" aria-live="polite">
+        <ol className="mt-3 grid list-none gap-2.5 p-0 text-[13px] leading-snug text-text-secondary" aria-live="polite">
           {STAGE_DESCRIPTIONS.map((s, i) => {
             const on = turn.status === "thinking" && i === turn.stage;
             const done = i < turn.stage;

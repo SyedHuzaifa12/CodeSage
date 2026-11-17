@@ -4,7 +4,7 @@ import { forwardRef, type InputHTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
-  /** Renders as an editorial italic Newsreader field (Ask's composer, Search's query box). */
+  /** Larger, roomier field (Ask's composer, Search's query box). */
   editorial?: boolean;
 }
 
@@ -14,7 +14,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       ref={ref}
       className={cn(
         "w-full bg-transparent text-text-primary placeholder:text-text-tertiary focus:outline-none",
-        editorial ? "font-display italic text-[15px]" : "font-sans text-[13px]",
+        editorial ? "font-sans text-[15px]" : "font-sans text-[13.5px]",
         className,
       )}
       {...props}

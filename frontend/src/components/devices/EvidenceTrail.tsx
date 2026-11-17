@@ -36,7 +36,7 @@ export function EvidenceTrail({ children, primary = false, compact = false, clas
         />
         {!compact && (
           <span
-            className="mt-0.5 ml-px min-h-[10px] flex-1 border-l border-dotted border-white/20"
+            className="mt-0.5 ml-px min-h-[10px] flex-1 border-l border-dotted border-[oklch(var(--cs-ov)_0_0/0.2)]"
             aria-hidden="true"
           />
         )}

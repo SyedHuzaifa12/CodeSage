@@ -80,7 +80,7 @@ export function DiagramFrame({ title, mermaidCode, diagramType }: { title: strin
   }, [visible, mermaidCode]);
 
   return (
-    <figure ref={containerRef} className="cs-panel m-0 mt-[22px] bg-[radial-gradient(oklch(1_0_0/0.055)_1px,transparent_1.2px),linear-gradient(180deg,oklch(0.185_0.009_280),var(--cs-surface-1))] bg-[length:20px_20px,auto] px-[18px] pb-3.5 pt-[18px]">
+    <figure ref={containerRef} className="cs-panel m-0 mt-[22px] bg-[radial-gradient(oklch(var(--cs-ov)_0_0/0.08)_1px,transparent_1.2px),linear-gradient(180deg,var(--cs-surface-2),var(--cs-surface-1))] bg-[length:20px_20px,auto] px-[18px] pb-3.5 pt-[18px]">
       <p className="cs-mono-label">
         {title}
         {diagramType && <span className="ml-1 normal-case tracking-normal"> · {diagramType}</span>}

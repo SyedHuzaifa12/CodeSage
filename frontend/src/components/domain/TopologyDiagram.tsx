@@ -100,7 +100,7 @@ export function TopologyDiagram({
               key={edgeKey(e)}
               d={`M${a.x.toFixed(1)} ${a.y.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`}
               fill="none"
-              stroke={cyc ? "var(--cs-danger)" : on ? "var(--cs-violet-line)" : "oklch(1 0 0 / 0.16)"}
+              stroke={cyc ? "var(--cs-danger)" : on ? "var(--cs-violet-line)" : "oklch(var(--cs-ov) 0 0 / 0.16)"}
               strokeWidth={cyc ? 1.3 : 1}
               style={{ opacity: hover && !on ? 0.12 : 1, transition: "opacity 200ms, stroke 200ms" }}
             />
@@ -139,7 +139,7 @@ export function TopologyDiagram({
                 cy={p.y}
                 r={r}
                 fill={hot ? "url(#cs-th)" : "url(#cs-tb)"}
-                stroke={orphan ? "var(--cs-text-tertiary)" : hover === n ? "oklch(1 0 0 / 0.6)" : "oklch(1 0 0 / 0.28)"}
+                stroke={orphan ? "var(--cs-text-tertiary)" : hover === n ? "oklch(var(--cs-ov) 0 0 / 0.6)" : "oklch(var(--cs-ov) 0 0 / 0.28)"}
                 strokeWidth={1.2}
                 strokeDasharray={orphan ? "1.5 2.5" : undefined}
               />

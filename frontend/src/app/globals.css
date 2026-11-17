@@ -3,20 +3,63 @@
 @tailwind utilities;
 
 /*
- * Design tokens — Editorial Graph (Sprint 7 Design System §7).
- * Single, permanent dark visual language. No light-mode variant exists;
- * this is a deliberate art-direction decision, not an oversight.
- * Depth comes from lightness steps, inset highlights and light — never
- * drop shadows.
+ * Design tokens (Sprint 7 Design System §7, revised for a conventional enterprise look).
+ * Light is the default. Dark is opt-in via <html data-theme="dark"> (toggle in the top bar, remembered per
+ * browser). Components read only these variables, so a theme is just a set of values.
  */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Loaded via a Google Fonts <link> in layout.tsx, not next/font/google
-     — see the comment there for why. */
-  --font-newsreader: "Newsreader", Georgia, "Times New Roman", serif;
-  --font-plex-sans: "IBM Plex Sans", system-ui, sans-serif;
-  --font-plex-mono: "IBM Plex Mono", ui-monospace, monospace;
+  /* Inter for all UI text, JetBrains Mono only where text is code, a path or a number table. Loaded via a
+     Google Fonts <link> in layout.tsx (see the note there). */
+  --font-display: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Lightness of the translucent overlay tint: black-on-light, white-on-dark. Used as oklch(var(--cs-ov) 0 0 / a). */
+  --cs-ov: 0;
+
+  --cs-bg: oklch(0.982 0.003 260);
+  --cs-surface-1: oklch(1 0 0);
+  --cs-surface-2: oklch(0.967 0.004 260);
+  --cs-surface-3: oklch(0.94 0.005 260);
+  --cs-border-subtle: oklch(0.915 0.005 260);
+  --cs-border-strong: oklch(0.84 0.006 260);
+
+  --cs-text-primary: oklch(0.21 0.014 260);
+  --cs-text-secondary: oklch(0.41 0.014 260);
+  --cs-text-tertiary: oklch(0.5 0.012 260); /* >= 4.5:1 on white and on --cs-bg */
+
+  --cs-accent-violet: oklch(0.5 0.21 300);
+  --cs-accent-violet-hover: oklch(0.44 0.22 300);
+  --cs-accent-cyan: oklch(0.5 0.11 215);
+  --cs-success: oklch(0.5 0.13 150);
+  --cs-warning: oklch(0.55 0.14 65);
+  --cs-danger: oklch(0.53 0.21 25);
+  --cs-info: oklch(0.5 0.13 240);
+  --cs-on-accent: oklch(1 0 0); /* text on a filled accent button */
+
+  --cs-violet-tint: oklch(0.5 0.21 300 / 0.08);
+  --cs-violet-line: oklch(0.5 0.21 300 / 0.4);
+  --cs-cyan-tint: oklch(0.5 0.11 215 / 0.08);
+  --cs-danger-tint: oklch(0.53 0.21 25 / 0.08);
+  --cs-warning-tint: oklch(0.55 0.14 65 / 0.1);
+  --cs-info-tint: oklch(0.5 0.13 240 / 0.07);
+  --cs-glass: oklch(1 0 0 / 0.86);
+
+  --cs-card-bg: var(--cs-surface-1);
+  --cs-card-highlight: 0 1px 2px oklch(0.2 0.02 260 / 0.06);
+
+  --cs-watermark-opacity: 0.04;
+  --cs-minimap-mask: oklch(0.2 0.02 260 / 0.1);
+
+  --cs-ease: cubic-bezier(0.2, 0, 0, 1);
+  --cs-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --cs-ov: 1;
 
   --cs-bg: oklch(0.15 0.006 280);
   --cs-surface-1: oklch(0.17 0.008 280);
@@ -27,7 +70,6 @@
 
   --cs-text-primary: oklch(0.93 0.006 280);
   --cs-text-secondary: oklch(0.72 0.01 280);
-  /* Raised from 0.55 so tertiary text clears 4.5:1 on --cs-bg and --cs-surface-1. */
   --cs-text-tertiary: oklch(0.62 0.01 280);
 
   --cs-accent-violet: oklch(0.75 0.13 300);
@@ -37,6 +79,7 @@
   --cs-warning: oklch(0.78 0.12 70);
   --cs-danger: oklch(0.7 0.16 25);
   --cs-info: oklch(0.75 0.12 230);
+  --cs-on-accent: oklch(0.18 0.03 300);
 
   --cs-violet-tint: oklch(0.75 0.13 300 / 0.1);
   --cs-violet-line: oklch(0.75 0.13 300 / 0.45);
@@ -46,15 +89,11 @@
   --cs-info-tint: oklch(0.75 0.12 230 / 0.08);
   --cs-glass: oklch(0.15 0.006 280 / 0.82);
 
-  /* Card treatment reserved for transient overlays / genuine call-outs (§16). */
   --cs-card-bg: oklch(0.17 0.008 280 / 0.6);
   --cs-card-highlight: inset 0 1px 0 oklch(1 0 0 / 0.05);
 
-  /* Atmospheric topology watermark ceiling — a token, never eyeballed per page (§17 trade-offs). */
   --cs-watermark-opacity: 0.05;
-
-  --cs-ease: cubic-bezier(0.2, 0, 0, 1);
-  --cs-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --cs-minimap-mask: oklch(0.1 0.006 280 / 0.6);
 }
 
 * {
@@ -76,9 +115,9 @@ html {
 }
 
 body {
-  font-family: var(--font-plex-sans), system-ui, sans-serif;
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
   font-kerning: normal;
   -webkit-font-smoothing: antialiased;
 }
@@ -96,21 +135,19 @@ a {
   border-radius: 4px;
 }
 
-/* Underline inputs keep a strong indicator — a 2px violet rule in place of
-   the box ring, which fought the underline and read as a second field. */
+/* Text fields draw their own focus ring (border + soft halo), so the global outline is dropped for them. */
 .cs-underline-input:focus-visible {
   outline: none;
-  border-radius: 0;
-  background-size: 100% 2px, 100% 1px;
+  border-radius: 8px;
 }
 
 ::selection {
-  background: oklch(0.75 0.13 300 / 0.32);
+  background: var(--cs-violet-line);
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: oklch(1 0 0 / 0.12) transparent;
+  scrollbar-color: oklch(var(--cs-ov) 0 0 / 0.12) transparent;
 }
 
 h1,
@@ -126,16 +163,14 @@ p {
 @layer components {
   /* ---------- type ---------- */
   .cs-mono-label {
-    font-family: var(--font-plex-mono), monospace;
-    font-size: 10.5px;
+    font-family: var(--font-sans), system-ui, sans-serif;
+    font-size: 12px;
     font-weight: 500;
     line-height: 1.4;
-    letter-spacing: 0.11em;
-    text-transform: uppercase;
     color: var(--cs-text-tertiary);
   }
   .cs-monoline {
-    font-family: var(--font-plex-mono), monospace;
+    font-family: var(--font-mono), monospace;
     font-size: 12px;
     line-height: 1.5;
     color: var(--cs-text-tertiary);
@@ -143,30 +178,28 @@ p {
     font-variant-numeric: tabular-nums;
   }
   .cs-masthead {
-    font-family: var(--font-newsreader), serif;
-    font-style: italic;
-    font-weight: 500;
-    font-size: clamp(36px, 4.6vw, 56px);
-    line-height: 1;
-    letter-spacing: -0.026em;
+    font-family: var(--font-display), system-ui, sans-serif;
+    font-weight: 600;
+    font-size: clamp(28px, 3.4vw, 38px);
+    line-height: 1.15;
+    letter-spacing: -0.022em;
     overflow-wrap: anywhere;
     color: var(--cs-text-primary);
   }
   .cs-display {
-    font-family: var(--font-newsreader), serif;
-    font-style: italic;
-    font-weight: 500;
-    font-size: clamp(26px, 3vw, 34px);
-    line-height: 1.1;
-    letter-spacing: -0.014em;
+    font-family: var(--font-display), system-ui, sans-serif;
+    font-weight: 600;
+    font-size: clamp(22px, 2.6vw, 28px);
+    line-height: 1.2;
+    letter-spacing: -0.018em;
     color: var(--cs-text-primary);
   }
   .cs-lede {
-    font-family: var(--font-newsreader), serif;
-    font-size: 19px;
+    font-family: var(--font-sans), system-ui, sans-serif;
+    font-size: 16px;
     line-height: 1.6;
-    color: oklch(0.76 0.01 280);
-    max-width: 62ch;
+    color: var(--cs-text-secondary);
+    max-width: 64ch;
   }
   .cs-lede b {
     color: var(--cs-text-primary);
@@ -186,7 +219,7 @@ p {
   .cs-panel {
     border-radius: 10px;
     border: 1px solid var(--cs-border-subtle);
-    background: linear-gradient(180deg, oklch(0.185 0.009 280), var(--cs-surface-1));
+    background: var(--cs-surface-1);
     box-shadow: var(--cs-card-highlight);
   }
   .cs-callout {
@@ -223,14 +256,12 @@ p {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    height: 22px;
-    padding: 0 9px;
+    height: 24px;
+    padding: 0 10px;
     border-radius: 999px;
     border: 1px solid var(--cs-border-strong);
-    background: oklch(1 0 0 / 0.015);
-    font: 500 10px/1 var(--font-plex-mono), monospace;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    background: oklch(var(--cs-ov) 0 0 / 0.02);
+    font: 500 12px/1 var(--font-sans), system-ui, sans-serif;
     white-space: nowrap;
     color: var(--cs-text-secondary);
   }
@@ -244,11 +275,11 @@ p {
   .cs-pill {
     display: inline-flex;
     align-items: center;
-    height: 19px;
-    padding: 0 7px;
+    height: 20px;
+    padding: 0 8px;
     border-radius: 999px;
     border: 1px solid var(--cs-border-strong);
-    font: 500 10px/1 var(--font-plex-mono), monospace;
+    font: 500 11px/1 var(--font-sans), system-ui, sans-serif;
     white-space: nowrap;
     color: var(--cs-text-secondary);
   }
@@ -274,7 +305,7 @@ p {
     padding: 0 6px;
     border-radius: 4px;
     border: 1px dashed currentColor;
-    font: 500 9.5px/1 var(--font-plex-mono), monospace;
+    font: 500 9.5px/1 var(--font-mono), monospace;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     white-space: nowrap;
@@ -287,7 +318,7 @@ p {
     padding: 4px 7px;
     border-radius: 5px;
     background: var(--cs-surface-2);
-    font: 500 10.5px/1 var(--font-plex-mono), monospace;
+    font: 500 10.5px/1 var(--font-mono), monospace;
     white-space: nowrap;
     color: var(--cs-text-secondary);
   }
@@ -297,7 +328,7 @@ p {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: 500 12px/1.4 var(--font-plex-mono), monospace;
+    font: 500 13px/1.4 var(--font-sans), system-ui, sans-serif;
     color: var(--cs-accent-violet);
     border-radius: 4px;
     text-align: left;
@@ -328,7 +359,7 @@ p {
     padding: 0 11px;
     border-radius: 999px;
     border: 1px solid var(--cs-border-strong);
-    font: 500 11.5px/1 var(--font-plex-mono), monospace;
+    font: 500 12.5px/1 var(--font-sans), system-ui, sans-serif;
     color: var(--cs-text-secondary);
     transition: color 120ms, border-color 120ms, background 120ms, transform 120ms;
   }
@@ -347,11 +378,10 @@ p {
     min-height: 34px;
     padding: 6px 14px;
     border-radius: 999px;
-    border: 1px solid var(--cs-border-subtle);
-    background: oklch(1 0 0 / 0.012);
-    font-family: var(--font-newsreader), serif;
-    font-style: italic;
-    font-size: 14.5px;
+    border: 1px solid var(--cs-border-strong);
+    background: var(--cs-surface-1);
+    font-family: var(--font-sans), system-ui, sans-serif;
+    font-size: 13px;
     line-height: 1.3;
     text-align: left;
     color: var(--cs-text-secondary);
@@ -368,16 +398,21 @@ p {
   }
   .cs-underline-input {
     width: 100%;
-    background: linear-gradient(var(--cs-accent-violet), var(--cs-accent-violet)) 0 100% / 0 1px no-repeat,
-      linear-gradient(var(--cs-border-strong), var(--cs-border-strong)) 0 100% / 100% 1px no-repeat;
-    border: 0;
+    border: 1px solid var(--cs-border-strong);
+    border-radius: 8px;
+    background: var(--cs-surface-1);
+    padding: 0 12px;
     outline: none;
     color: var(--cs-text-primary);
-    transition: background-size 280ms var(--cs-ease-out);
+    transition: border-color 120ms, box-shadow 120ms;
+  }
+  .cs-underline-input:hover {
+    border-color: var(--cs-text-tertiary);
   }
   .cs-underline-input:focus,
   .cs-underline-input:focus-within {
-    background-size: 100% 1px, 100% 1px;
+    border-color: var(--cs-accent-violet);
+    box-shadow: 0 0 0 3px var(--cs-violet-tint);
   }
   .cs-underline-input::placeholder {
     color: var(--cs-text-tertiary);
@@ -388,7 +423,7 @@ p {
     border: 1px solid var(--cs-border-strong);
     background: var(--cs-surface-1);
     padding: 0 8px;
-    font: 500 12px var(--font-plex-mono), monospace;
+    font: 500 12px var(--font-mono), monospace;
     color: var(--cs-text-primary);
   }
   .cs-disclosure-btn {
@@ -397,7 +432,7 @@ p {
     gap: 6px;
     padding: 7px 4px;
     border-radius: 4px;
-    font: 500 11px/1 var(--font-plex-mono), monospace;
+    font: 500 11px/1 var(--font-mono), monospace;
     color: var(--cs-text-tertiary);
   }
   .cs-disclosure-btn:hover {
@@ -435,7 +470,7 @@ p {
   }
   .cs-errmono {
     margin-top: 6px;
-    font: 400 11.5px/1.55 var(--font-plex-mono), monospace;
+    font: 400 11.5px/1.55 var(--font-mono), monospace;
     color: var(--cs-text-secondary);
     white-space: pre-wrap;
     word-break: break-word;
@@ -447,7 +482,7 @@ p {
     grid-template-columns: max-content 1fr;
     gap: 6px 18px;
     margin: 0;
-    font: 400 12px/1.5 var(--font-plex-mono), monospace;
+    font: 400 12px/1.5 var(--font-mono), monospace;
     font-variant-numeric: tabular-nums;
   }
   .cs-kv dt {
@@ -476,7 +511,7 @@ p {
     border-left: 1px solid var(--cs-border-subtle);
   }
   .cs-statval {
-    font: 500 16px/1.25 var(--font-plex-mono), monospace;
+    font: 500 16px/1.25 var(--font-mono), monospace;
     font-variant-numeric: tabular-nums;
     color: var(--cs-text-primary);
   }
@@ -518,7 +553,7 @@ p {
     margin: 0;
     padding: 0;
     list-style: none;
-    font: 400 12px/1.55 var(--font-plex-mono), monospace;
+    font: 400 12px/1.55 var(--font-mono), monospace;
     color: var(--cs-text-secondary);
   }
   .cs-reasons li {
@@ -585,7 +620,7 @@ p {
     transition: transform 200ms var(--cs-ease-out);
   }
   .cs-hover-row:hover {
-    background: linear-gradient(90deg, oklch(1 0 0 / 0.022), transparent 85%);
+    background: var(--cs-surface-2);
   }
   .cs-hover-row:hover::before,
   .cs-hover-row[data-active="true"]::before {
@@ -600,7 +635,8 @@ p {
     overflow-x: clip;
     animation: cs-page-in 280ms var(--cs-ease) both;
   }
-  .cs-page-glow::before {
+  /* A soft atmospheric glow behind the page header. Dark theme only: on a light page it reads as a smudge. */
+  :root[data-theme="dark"] .cs-page-glow::before {
     content: "";
     position: absolute;
     left: 0;
@@ -630,9 +666,9 @@ p {
 
 /* ---------- Ask prose ---------- */
 .cs-prose {
-  max-width: 64ch;
-  font-size: 15.5px;
-  line-height: 1.82;
+  max-width: none;
+  font-size: 15px;
+  line-height: 1.72;
   color: var(--cs-text-primary);
   overflow-wrap: break-word;
 }
@@ -649,7 +685,16 @@ p {
 .cs-prose ul,
 .cs-prose ol {
   margin: 0;
-  padding-left: 1.25em;
+  padding-left: 1.35em;
+}
+.cs-prose ul {
+  list-style: disc;
+}
+.cs-prose ol {
+  list-style: decimal;
+}
+.cs-prose li::marker {
+  color: var(--cs-text-tertiary);
 }
 .cs-prose li + li {
   margin-top: 0.3em;
@@ -660,8 +705,8 @@ p {
 .cs-prose .cs-art {
   padding: 1px 5px;
   border-radius: 4px;
-  background: oklch(1 0 0 / 0.05);
-  font-family: var(--font-plex-mono), monospace;
+  background: oklch(var(--cs-ov) 0 0 / 0.05);
+  font-family: var(--font-mono), monospace;
   font-size: 0.84em;
   color: var(--cs-text-primary);
 }
@@ -683,7 +728,7 @@ p {
   box-shadow: inset 0 0 0 1px currentColor;
 }
 .cs-prose .cs-lines {
-  font-family: var(--font-plex-mono), monospace;
+  font-family: var(--font-mono), monospace;
   font-size: 0.84em;
   color: var(--cs-text-secondary);
 }
@@ -693,14 +738,14 @@ p {
 
 /* ---------- graph (React Flow) ---------- */
 .cs-graph-canvas {
-  background-color: oklch(0.143 0.006 280);
+  background-color: var(--cs-bg);
 }
 .cs-graph-canvas .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--cs-border-subtle);
   border-radius: 10px;
   box-shadow: var(--cs-card-highlight);
-  background: oklch(0.18 0.009 280 / 0.85);
+  background: var(--cs-glass);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
 }
@@ -734,14 +779,14 @@ p {
 
 .cs-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: oklch(1 0 0 / 0.14) transparent;
+  scrollbar-color: oklch(var(--cs-ov) 0 0 / 0.14) transparent;
 }
 .cs-scrollbar::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 .cs-scrollbar::-webkit-scrollbar-thumb {
-  background: oklch(1 0 0 / 0.12);
+  background: oklch(var(--cs-ov) 0 0 / 0.12);
   border-radius: 999px;
 }
 

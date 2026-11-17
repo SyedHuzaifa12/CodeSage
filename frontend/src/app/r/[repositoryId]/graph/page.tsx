@@ -115,7 +115,7 @@ function Inspector({
         </button>
       )}
       <p className="cs-mono-label">Inspector</p>
-      <h2 className="mt-2 break-all pr-8 font-display text-[19px] italic leading-snug text-text-primary">{node}</h2>
+      <h2 className="mt-2 break-all pr-8 font-display font-semibold text-[19px] leading-snug text-text-primary">{node}</h2>
       <p className="cs-monoline mt-1 !text-[11px]">
         {incoming.length + outgoing.length} connections · {symbols.length} symbols
       </p>
@@ -281,7 +281,7 @@ function GraphInner() {
     <div className="grid h-full min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px]">
       <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex flex-wrap items-center gap-x-[18px] gap-y-3 border-b border-border-subtle px-6 py-4">
-          <h1 className="font-display text-[26px] italic tracking-[-0.015em] text-text-primary">Knowledge map</h1>
+          <h1 className="font-display font-semibold text-[26px] tracking-[-0.015em] text-text-primary">Knowledge map</h1>
           <SegmentedControl
             aria-label="Graph type"
             value={mode}
@@ -353,7 +353,7 @@ function GraphInner() {
       </div>
       <aside
         aria-label="Graph inspector"
-        className="cs-scrollbar hidden min-h-0 overflow-y-auto border-l border-border-subtle bg-[linear-gradient(180deg,oklch(0.163_0.007_280),var(--cs-bg)_55%)] px-[22px] pb-10 pt-6 xl:block"
+        className="cs-scrollbar hidden min-h-0 overflow-y-auto border-l border-border-subtle bg-surface-1 px-[22px] pb-10 pt-6 xl:block"
         aria-live="polite"
       >
         {inspector}

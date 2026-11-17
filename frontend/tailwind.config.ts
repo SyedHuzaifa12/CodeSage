@@ -3,8 +3,8 @@ import type { Config } from "tailwindcss";
 /**
  * Tailwind configured entirely from CodeSage's design tokens (Sprint 7
  * Design System §7), expressed as CSS custom properties in
- * src/app/globals.css — never hardcoded Tailwind defaults. Editorial
- * Graph is a single, permanent dark visual language (no light mode).
+ * src/app/globals.css — never hardcoded Tailwind defaults. Light is the
+ * default theme; dark is opt-in via <html data-theme="dark">.
  */
 const config: Config = {
   darkMode: "class",
@@ -29,18 +29,18 @@ const config: Config = {
         info: "var(--cs-info)",
       },
       fontFamily: {
-        display: ["var(--font-newsreader)", "Georgia", "serif"],
-        sans: ["var(--font-plex-sans)", "system-ui", "sans-serif"],
-        mono: ["var(--font-plex-mono)", "ui-monospace", "monospace"],
+        display: ["var(--font-display)", "system-ui", "sans-serif"],
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "monospace"],
       },
       fontSize: {
-        masthead: ["52px", { lineHeight: "0.98", letterSpacing: "-0.02em" }],
-        "masthead-lg": ["58px", { lineHeight: "0.98", letterSpacing: "-0.02em" }],
-        display: ["34px", { lineHeight: "1.05", letterSpacing: "-0.012em" }],
-        h1: ["22px", { lineHeight: "1.2" }],
+        masthead: ["38px", { lineHeight: "1.15", letterSpacing: "-0.022em" }],
+        "masthead-lg": ["44px", { lineHeight: "1.12", letterSpacing: "-0.024em" }],
+        display: ["28px", { lineHeight: "1.2", letterSpacing: "-0.018em" }],
+        h1: ["22px", { lineHeight: "1.25" }],
         h2: ["17px", { lineHeight: "1.3" }],
-        lede: ["19px", { lineHeight: "1.6" }],
-        body: ["13.5px", { lineHeight: "1.6" }],
+        lede: ["16px", { lineHeight: "1.6" }],
+        body: ["14px", { lineHeight: "1.55" }],
         small: ["12px", { lineHeight: "1.5" }],
         micro: ["11px", { lineHeight: "1.4" }],
       },

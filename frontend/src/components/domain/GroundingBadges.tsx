@@ -13,13 +13,13 @@ export function VerificationBadge({ status, className }: { status: VerificationS
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 font-mono text-[10.5px]",
+        "inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-1 text-[12px] font-medium",
         className,
       )}
       style={{ borderColor: `color-mix(in oklch, var(${spec.colorVar}) 40%, transparent)`, color: `var(${spec.colorVar})` }}
     >
       <ConfidenceRing value={status} size={13} />
-      {spec.label.toUpperCase()}
+      {spec.label}
     </span>
   );
 }
@@ -28,13 +28,13 @@ export function EvidenceConfidenceTag({ value, className }: { value: EvidenceCon
   const spec = getConfidenceSpec(value);
   return (
     <span
-      className={cn("inline-flex items-center gap-1 rounded-pill px-2.5 py-1 font-mono text-[9.5px]", className)}
+      className={cn("inline-flex items-center gap-1 rounded-pill px-2.5 py-1 text-[11px] font-medium", className)}
       style={{
         background: `color-mix(in oklch, var(${spec.colorVar}) 14%, transparent)`,
         color: `var(${spec.colorVar})`,
       }}
     >
-      {spec.label.toUpperCase()}
+      {spec.label}
     </span>
   );
 }
@@ -56,7 +56,7 @@ export function CitationChip({
       onClick={onClick}
       className={cn(
         "inline-flex items-center rounded-pill px-2.5 py-1 font-mono text-[11px]",
-        primary ? "bg-violet/[0.12] text-[oklch(0.82_0.11_300)]" : "text-text-secondary hover:text-text-primary",
+        primary ? "bg-[var(--cs-violet-tint)] text-violet" : "text-text-secondary hover:text-text-primary",
         onClick && "cursor-pointer focus-visible:outline-2",
         className,
       )}

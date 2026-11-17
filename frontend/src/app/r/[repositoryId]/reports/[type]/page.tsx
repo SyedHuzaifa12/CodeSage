@@ -168,7 +168,7 @@ export default function ReportReaderPage({ params }: { params: { type: string } 
                   </span>
                 </p>
                 <div className="mt-2.5 flex flex-wrap items-start justify-between gap-4">
-                  <h1 className="font-display text-[clamp(34px,4.2vw,46px)] italic leading-[1.05] tracking-[-0.022em] text-text-primary">{viewing.title ?? title}</h1>
+                  <h1 className="font-display font-semibold text-[clamp(34px,4.2vw,46px)] leading-[1.05] tracking-[-0.022em] text-text-primary">{viewing.title ?? title}</h1>
                   <span className="flex flex-shrink-0 items-center gap-3 pt-2">
                     {viewing.stale && !isHistorical && (
                       <span className="cs-chip border-warning/35 text-warning">

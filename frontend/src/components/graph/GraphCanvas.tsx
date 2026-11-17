@@ -86,7 +86,7 @@ export function GraphCanvas({
     return model.edges.map((e) => {
       const cycle = mode === "dependency" && cycleKeys.has(edgeKey(e));
       const active = Boolean(focus && (e.source === focus || e.target === focus));
-      const color = cycle ? "var(--cs-danger)" : active ? "var(--cs-accent-violet)" : "oklch(1 0 0 / 0.32)";
+      const color = cycle ? "var(--cs-danger)" : active ? "var(--cs-accent-violet)" : "oklch(var(--cs-ov) 0 0 / 0.32)";
       return {
         id: edgeKey(e),
         source: e.source,
@@ -179,16 +179,16 @@ export function GraphCanvas({
         maxZoom={2.5}
         proOptions={{ hideAttribution: true }}
       >
-        <Background color="oklch(1 0 0 / 0.055)" gap={24} size={1.2} />
+        <Background color="oklch(var(--cs-ov) 0 0 / 0.055)" gap={24} size={1.2} />
         <Controls showInteractive={false} position="bottom-left" />
         <MiniMap
           pannable
           zoomable
           position="bottom-right"
-          nodeColor={(n) => ((n.data as CsGraphNodeData).hotspot ? "oklch(0.75 0.13 300)" : "oklch(1 0 0 / 0.45)")}
+          nodeColor={(n) => ((n.data as CsGraphNodeData).hotspot ? "oklch(0.75 0.13 300)" : "oklch(var(--cs-ov) 0 0 / 0.45)")}
           nodeStrokeWidth={0}
-          maskColor="oklch(0.1 0.006 280 / 0.6)"
-          style={{ background: "oklch(0.18 0.009 280 / 0.85)", width: 170, height: 120 }}
+          maskColor="var(--cs-minimap-mask)"
+          style={{ background: "var(--cs-glass)", width: 170, height: 120 }}
         />
       </ReactFlow>
     </div>
