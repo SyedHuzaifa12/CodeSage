@@ -149,9 +149,11 @@ class _Session:
 def clone_env(monkeypatch, tmp_path):
     env = SimpleNamespace(
         threads=[], removed=[], order=[], measure=SimpleNamespace(exceeded=False), clone_error=None, scan_error=None,
+        remote_kb=None, remote_calls=[], timeouts=[],
     )
 
-    def clone(url, path):
+    def clone(url, path, timeout_seconds=None):
+        env.timeouts.append(timeout_seconds)
         env.threads.append(threading.current_thread())
         env.order.append("clone")
         if env.clone_error:
@@ -166,7 +168,12 @@ def clone_env(monkeypatch, tmp_path):
         env.removed.append(path)
         env.order.append("remove")
 
+    def remote_size(url):
+        env.remote_calls.append(url)
+        return env.remote_kb
+
     monkeypatch.setattr(repo_service_module, "clone_repository", clone)
+    monkeypatch.setattr(repo_service_module, "fetch_remote_size_kb", remote_size)  # never the real GitHub API in tests
     monkeypatch.setattr(repo_service_module, "measure_tree", measure)
     monkeypatch.setattr(repo_service_module, "remove_local_clone", remove)
     monkeypatch.setattr(repo_service_module.repository_db, "save", AsyncMock())
@@ -179,7 +186,7 @@ def clone_env(monkeypatch, tmp_path):
 
     env.session = _Session()
     env.service = RepositoryService(
-        session=env.session, settings=SimpleNamespace(),
+        session=env.session, settings=SimpleNamespace(ingestion=SimpleNamespace(clone_timeout_seconds=600)),
         workspace_service=SimpleNamespace(scan_repository=scan),
     )
     env.repo = SimpleNamespace(
@@ -247,3 +254,45 @@ class TestCloneAndScan:
         await clone_env.service.clone_and_scan(clone_env.repo)
 
         assert clone_env.repo.status == "ready"
+
+
+class TestRemoteSizePrecheck:
+    """A guest's oversized repository must be refused before the download, not after it (a huge clone ties up the
+    single-job indexer for as long as it takes, and everything queued behind it waits)."""
+
+    GUEST = dict(max_files=1500, max_bytes=40 * 1024 * 1024)
+
+    async def test_a_repository_far_over_the_limit_is_refused_without_cloning(self, clone_env):
+        clone_env.remote_kb = 4 * 1024 * 1024  # 4 GB, like a very large open-source project
+
+        with pytest.raises(RepositoryTooLargeError):
+            await clone_env.service.clone_and_scan(clone_env.repo, publish_progress=True, **self.GUEST)
+
+        assert "clone" not in clone_env.order  # nothing was downloaded
+        assert clone_env.repo.status == "failed" and "larger than the free demo" in clone_env.repo.error_message
+        assert clone_env.session.commits == 1  # and a poller sees the failure at once
+
+    async def test_the_threshold_allows_for_history_that_a_shallow_clone_does_not_download(self, clone_env):
+        limit_kb = 40 * 1024 * 12  # 12x the guest cap, in KB
+        clone_env.remote_kb = limit_kb  # exactly at the line: allowed (then measured after cloning)
+        await clone_env.service.clone_and_scan(clone_env.repo, **self.GUEST)
+        assert "clone" in clone_env.order
+
+        clone_env.order.clear()
+        clone_env.remote_kb = limit_kb + 1
+        with pytest.raises(RepositoryTooLargeError):
+            await clone_env.service.clone_and_scan(clone_env.repo, **self.GUEST)
+        assert "clone" not in clone_env.order
+
+    async def test_an_unknown_size_never_blocks_an_import(self, clone_env):
+        clone_env.remote_kb = None  # rate-limited, private, or GitHub unreachable
+        await clone_env.service.clone_and_scan(clone_env.repo, **self.GUEST)
+        assert clone_env.repo.status == "ready"
+
+    async def test_members_with_no_size_cap_do_not_trigger_a_lookup_at_all(self, clone_env):
+        await clone_env.service.clone_and_scan(clone_env.repo)
+        assert clone_env.remote_calls == []
+
+    async def test_the_clone_gets_the_configured_hard_time_limit(self, clone_env):
+        await clone_env.service.clone_and_scan(clone_env.repo)
+        assert clone_env.timeouts == [600]

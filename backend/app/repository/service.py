@@ -34,12 +34,18 @@ from app.repository.schemas import RepositoryCreateRequest, RepositoryUpdateRequ
 from app.repository.utils import (
     build_local_path,
     clone_repository,
+    fetch_remote_size_kb,
     measure_tree,
     parse_github_url,
     remove_local_clone,
 )
 
 logger = logging.getLogger("codesage.repository.service")
+
+_TOO_LARGE_MESSAGE = "This repository is larger than the free demo allows. Sign in with GitHub to index bigger repositories."
+# GitHub's reported size includes the full git history, which a shallow clone does not download. A repository whose
+# history is more than this many times the guest limit is refused up front; anything smaller is cloned and then measured.
+_REMOTE_HISTORY_FACTOR = 12
 
 
 class RepositoryService:
@@ -130,14 +136,20 @@ class RepositoryService:
 
         clone_started = time.perf_counter()
         try:
-            await asyncio.to_thread(clone_repository, repository.github_url, local_path)
+            if max_bytes is not None:
+                # A guest's size cap used to be checked only after the whole repository had been downloaded, so a huge
+                # one tied up the (single-job) indexer for as long as the download took. GitHub reports the size up front.
+                remote_kb = await asyncio.to_thread(fetch_remote_size_kb, repository.github_url)
+                if remote_kb is not None and remote_kb * 1024 > max_bytes * _REMOTE_HISTORY_FACTOR:
+                    raise RepositoryTooLargeError(_TOO_LARGE_MESSAGE)
+            await asyncio.to_thread(
+                clone_repository, repository.github_url, local_path, self._settings.ingestion.clone_timeout_seconds
+            )
             if max_files is not None or max_bytes is not None:
                 measure = await asyncio.to_thread(measure_tree, local_path, max_files, max_bytes)
                 if measure.exceeded:
                     remove_local_clone(local_path)
-                    raise RepositoryTooLargeError(
-                        "This repository is larger than the free demo allows. Sign in with GitHub to index bigger repositories."
-                    )
+                    raise RepositoryTooLargeError(_TOO_LARGE_MESSAGE)
         except Exception as exc:
             repository.status = "failed"
             repository.error_message = str(exc)
