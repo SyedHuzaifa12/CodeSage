@@ -142,7 +142,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
               <div className="cs-callout mt-6 px-5 py-[18px]">
                 <p className="cs-mono-label">Dependency hotspots</p>
                 <div className="mt-2 flex items-end gap-3.5">
-                  <span className="font-display text-[72px] italic leading-none tracking-[-0.04em] text-text-primary">{hotspots.length}</span>
+                  <span className="font-display font-semibold text-[72px] leading-none tracking-[-0.04em] text-text-primary">{hotspots.length}</span>
                   <span className="pb-2 text-small text-text-secondary">of {formatNumber(moduleCount)} modules</span>
                 </div>
                 <p className="mt-2 text-small text-text-secondary">
@@ -168,7 +168,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
                         className="block w-full rounded-t-[2px] transition-colors group-hover:bg-[var(--cs-accent-violet-hover)]"
                         style={{
                           height: `${Math.max(6, (h.incoming_dependencies / top.incoming_dependencies) * 100)}%`,
-                          background: i === 0 ? "linear-gradient(180deg, oklch(0.85 0.1 300), var(--cs-accent-violet))" : "oklch(0.75 0.13 300 / 0.28)",
+                          background: i === 0 ? "var(--cs-accent-violet)" : "oklch(0.75 0.13 300 / 0.28)",
                           transformOrigin: "bottom",
                           animation: `cs-grow-y 700ms var(--cs-ease-out) ${i * 45}ms both`,
                         }}
@@ -176,7 +176,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
                     </Link>
                   ))}
                 </div>
-                <div className="mt-2 flex justify-between cs-monoline !text-[11px]">
+                <div className="mt-2 flex justify-between text-small text-text-tertiary">
                   <span>incoming dependencies · top {hotspots.length}</span>
                   <span>
                     {top.incoming_dependencies} → {hotspots[hotspots.length - 1].incoming_dependencies}
@@ -196,13 +196,13 @@ function Overview({ repositoryId }: { repositoryId: string }) {
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="Ask about this repository…"
                   autoComplete="off"
-                  className="cs-underline-input h-12 font-display text-[19px] italic"
+                  className="cs-underline-input h-12 font-display font-semibold text-[19px]"
                 />
                 <button
                   type="submit"
                   aria-label="Ask"
                   disabled={!question.trim()}
-                  className="grid h-10 w-10 flex-none place-items-center rounded-full bg-[linear-gradient(180deg,oklch(0.82_0.12_300),oklch(0.72_0.135_300))] text-[oklch(0.18_0.03_300)] shadow-[inset_0_1px_0_oklch(1_0_0/0.35)] transition-transform active:scale-95 disabled:opacity-30"
+                  className="grid h-10 w-10 flex-none place-items-center rounded-full bg-[var(--cs-accent-violet)] text-[var(--cs-on-accent)] shadow-sm hover:enabled:bg-[var(--cs-accent-violet-hover)] transition-transform active:scale-95 disabled:opacity-30"
                 >
                   <Send size={16} aria-hidden="true" />
                 </button>
@@ -210,7 +210,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
               {lastAnswered?.response ? (
                 <div className="mt-4 border-t border-border-subtle pt-3.5">
                   <p className="cs-mono-label">Last in this session</p>
-                  <Link href={`/r/${repositoryId}/ask`} className="mt-1 block font-display text-[15.5px] italic text-text-primary hover:text-[var(--cs-accent-violet-hover)]">
+                  <Link href={`/r/${repositoryId}/ask`} className="mt-1 block font-display font-semibold text-[15.5px] text-text-primary hover:text-[var(--cs-accent-violet-hover)]">
                     &ldquo;{lastAnswered.question}&rdquo;
                   </Link>
                   <div className="mt-2">
@@ -258,8 +258,8 @@ function Overview({ repositoryId }: { repositoryId: string }) {
             <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
               <Legend cycles={(I?.circular_dependencies.length ?? 0) > 0} />
               {depGraph.data && (
-                <span className="cs-monoline !text-[11px]">
-                  top {Math.min(24, depGraph.data.nodes.length)} of {formatNumber(depGraph.data.nodes.length)} modules
+                <span className="text-small text-text-tertiary">
+                  Top {Math.min(24, depGraph.data.nodes.length)} of {formatNumber(depGraph.data.nodes.length)} modules
                 </span>
               )}
             </div>
@@ -270,7 +270,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
           <section aria-label="How CodeSage built its understanding" className="mt-16 border-t border-border-subtle pt-[18px]">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="cs-mono-label">From files to grounded answers</p>
-              <span className="cs-monoline !text-[11px]">every figure below is read from the index</span>
+              <span className="text-small text-text-tertiary">Every figure below is read from the index</span>
             </div>
             <div className="relative mt-5 grid grid-cols-2 gap-y-7 md:grid-cols-3 xl:grid-cols-6 xl:before:absolute xl:before:left-1.5 xl:before:right-1.5 xl:before:top-1.5 xl:before:h-px xl:before:bg-[linear-gradient(90deg,var(--cs-border-strong),var(--cs-border-strong)_70%,var(--cs-accent-violet))]">
               <Station href={`/r/${repositoryId}/explorer`} label="Scanned" value={formatNumber(W.total_files)} detail={`files · ${W.ignored_files} ignored`} />
@@ -297,7 +297,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
                 href={`/r/${repositoryId}/ask`}
                 label="Knowledge"
                 value={knowledge.data ? formatNumber(knowledge.data.total_chunks) : "—"}
-                detail={`chunks · ${knowledge.data?.embedding_model_version ?? "local embeddings"} → Ask`}
+                detail={`chunks · ${knowledge.data?.embedding_model_version ?? "embedding model"} → Ask`}
                 last
               />
             </div>
@@ -328,7 +328,7 @@ function Overview({ repositoryId }: { repositoryId: string }) {
               <p className="cs-mono-label">Circular dependencies · {I.circular_dependencies.length}</p>
               <div className="mt-3">
                 {I.circular_dependencies.length === 0 && (
-                  <p className="border-t border-border-subtle py-2.5 font-mono text-[12px] text-text-secondary">No cycles in the resolved dependency graph.</p>
+                  <p className="border-t border-border-subtle py-2.5 text-[13.5px] text-text-secondary">No cycles in the resolved dependency graph.</p>
                 )}
                 {I.circular_dependencies.slice(0, 8).map((c) => (
                   <Link
@@ -346,11 +346,11 @@ function Overview({ repositoryId }: { repositoryId: string }) {
               <p className="cs-mono-label">Architecture observations</p>
               <div className="mt-3">
                 {I.architecture_hints.map((h) => (
-                  <p key={h} className="border-t border-border-subtle py-2.5 font-mono text-[12px] text-text-secondary">
+                  <p key={h} className="border-t border-border-subtle py-2.5 text-[13.5px] text-text-secondary">
                     {h}
                   </p>
                 ))}
-                <p className="border-t border-border-subtle py-2.5 font-mono text-[12px] text-text-tertiary">
+                <p className="border-t border-border-subtle py-2.5 text-[13.5px] text-text-tertiary">
                   entry points {I.entry_points.length} · orphan files {I.orphan_files.length}
                 </p>
               </div>
@@ -374,7 +374,7 @@ function Station({ href, label, value, detail, last }: { href: string; label: st
         aria-hidden="true"
       />
       <span className="cs-mono-label mt-3.5 block">{label}</span>
-      <span className="my-2 block font-display text-[36px] italic leading-none tracking-[-0.02em] text-text-primary transition-colors group-hover:text-[var(--cs-accent-violet-hover)]">
+      <span className="my-2 block font-display font-semibold text-[36px] leading-none tracking-[-0.02em] text-text-primary transition-colors group-hover:text-[var(--cs-accent-violet-hover)]">
         {value}
       </span>
       <span className="block font-mono text-[11px] leading-snug text-text-tertiary">{detail}</span>

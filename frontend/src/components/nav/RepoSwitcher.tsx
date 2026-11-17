@@ -49,7 +49,7 @@ export function RepoSwitcher({ repository }: { repository: Repository }) {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Switch repository, current: ${repository.name}`}
-        className="flex h-9 max-w-[260px] items-center gap-2 rounded-[8px] px-2.5 font-display text-[16px] italic text-text-primary transition-colors hover:bg-surface-2"
+        className="flex h-9 max-w-[260px] items-center gap-2 rounded-[8px] px-2.5 font-display font-semibold text-[16px] text-text-primary transition-colors hover:bg-surface-2"
       >
         <span className="truncate">{repository.name}</span>
         <ChevronDown size={14} className="flex-none text-text-tertiary" aria-hidden="true" />
@@ -60,7 +60,7 @@ export function RepoSwitcher({ repository }: { repository: Repository }) {
           role="menu"
           aria-label="Repositories"
           onKeyDown={onMenuKey}
-          className="cs-glass cs-fade-in absolute right-0 top-[calc(100%+6px)] z-50 w-[min(340px,calc(100vw-20px))] rounded-[10px] border border-border-strong p-1.5 shadow-[inset_0_1px_0_oklch(1_0_0/0.07)]"
+          className="cs-glass cs-fade-in absolute right-0 top-[calc(100%+6px)] z-50 w-[min(340px,calc(100vw-20px))] rounded-[10px] border border-border-strong p-1.5 shadow-[inset_0_1px_0_oklch(var(--cs-ov)_0_0/0.07)]"
         >
           {repos.map((r) => (
             <Link
@@ -71,7 +71,7 @@ export function RepoSwitcher({ repository }: { repository: Repository }) {
               className="flex items-center justify-between gap-3 rounded-[7px] px-2.5 py-2 !outline-none hover:bg-surface-3 focus-visible:bg-surface-3"
               aria-current={r.id === repository.id ? "true" : undefined}
             >
-              <span className="truncate font-display text-[15.5px] italic text-text-primary">{r.name}</span>
+              <span className="truncate font-display font-semibold text-[15.5px] text-text-primary">{r.name}</span>
               <RepoStatusChip status={r.status} indexingStatus={r.indexing_status} />
             </Link>
           ))}

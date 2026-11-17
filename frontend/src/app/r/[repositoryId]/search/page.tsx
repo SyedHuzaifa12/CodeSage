@@ -93,7 +93,7 @@ function ResultRow({ r, query, repositoryId }: { r: EvidenceResult; query: strin
   const loc = `${r.file_path}${r.start_line ? `:${r.start_line}${r.end_line && r.end_line !== r.start_line ? `–${r.end_line}` : ""}` : ""}`;
   return (
     <div className="cs-hover-row -mx-1.5 grid grid-cols-[26px_minmax(0,1fr)] items-start gap-3.5 px-3 py-4 md:grid-cols-[28px_minmax(0,1fr)_auto]" data-active={open}>
-      <span className="font-display text-[21px] italic leading-none tracking-[-0.02em] text-text-tertiary">{String(r.rank).padStart(2, "0")}</span>
+      <span className="font-display font-semibold text-[21px] leading-none tracking-[-0.02em] text-text-tertiary">{String(r.rank).padStart(2, "0")}</span>
       <div className="min-w-0">
         <Link
           href={`/r/${repositoryId}/explorer?file=${encodeURIComponent(r.file_path)}${r.start_line ? `&line=${r.start_line}` : ""}`}
@@ -265,7 +265,7 @@ function SearchInner() {
               placeholder="password hashing, rate limiting, JWT verification…"
               autoComplete="off"
               spellCheck={false}
-              className="h-16 min-w-0 flex-1 bg-transparent font-display text-[clamp(22px,2.6vw,28px)] italic text-text-primary !outline-none placeholder:text-text-tertiary"
+              className="h-16 min-w-0 flex-1 bg-transparent font-display font-semibold text-[clamp(22px,2.6vw,28px)] text-text-primary !outline-none placeholder:text-text-tertiary"
             />
             <Button type="submit" variant="primary" size="sm" disabled={!draft.trim()}>
               Investigate

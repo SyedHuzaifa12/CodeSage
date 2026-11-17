@@ -36,8 +36,9 @@ interface TopologyMarkProps {
   title?: string;
 }
 
-const MARK_STROKE = "oklch(0.78 0.13 300 / 0.65)";
-const MARK_FILL = "oklch(0.85 0.13 300)";
+// Theme-aware: a fixed pale violet disappears on a white page.
+const MARK_STROKE = "var(--cs-accent-violet)";
+const MARK_FILL = "var(--cs-accent-violet)";
 
 function MarkGlyph({ size = 24 }: { size?: number }) {
   const height = Math.round((size * 20) / 26);
@@ -80,14 +81,14 @@ function TopologyWatermark({ className }: { className?: string }) {
     >
       {WATERMARK_INSTANCES.map((inst, i) => (
         <g key={i} transform={`translate(${inst.x} ${inst.y}) scale(${inst.scale}) rotate(${inst.rotate})`}>
-          <g stroke="oklch(0.75 0.13 300)" strokeWidth={1} fill="none">
+          <g stroke="var(--cs-accent-violet)" strokeWidth={1} fill="none">
             <path d="M4,15 L11,5" />
             <path d="M11,5 L19,9" />
             <path d="M19,9 L23,17" />
             <path d="M11,5 L14,17" />
             <path d="M4,15 L14,17" />
           </g>
-          <g fill="oklch(0.8 0.13 300)">
+          <g fill="var(--cs-accent-violet)">
             <circle cx={4} cy={15} r={1.7} />
             <circle cx={11} cy={5} r={2.1} />
             <circle cx={19} cy={9} r={1.7} />
@@ -131,8 +132,8 @@ function TopologyAssembling({ progress = 0.5, className }: { progress?: number; 
 
   return (
     <svg width={380} height={380} viewBox="0 0 380 380" className={className} aria-hidden="true">
-      <circle cx={190} cy={190} r={170} fill="none" stroke="oklch(1 0 0 / 0.04)" />
-      <circle cx={190} cy={190} r={120} fill="none" stroke="oklch(1 0 0 / 0.05)" />
+      <circle cx={190} cy={190} r={170} fill="none" stroke="oklch(var(--cs-ov) 0 0 / 0.04)" />
+      <circle cx={190} cy={190} r={120} fill="none" stroke="oklch(var(--cs-ov) 0 0 / 0.05)" />
 
       <g strokeWidth={1}>
         {ASSEMBLING_SOLID_EDGES.map(([from, to], i) => {
@@ -146,7 +147,7 @@ function TopologyAssembling({ progress = 0.5, className }: { progress?: number; 
               y1={a.y}
               x2={b.x}
               y2={b.y}
-              stroke={revealed ? "oklch(0.75 0.13 300 / 0.4)" : "oklch(1 0 0 / 0.06)"}
+              stroke={revealed ? "oklch(0.75 0.13 300 / 0.4)" : "oklch(var(--cs-ov) 0 0 / 0.06)"}
             />
           );
         })}
@@ -161,7 +162,7 @@ function TopologyAssembling({ progress = 0.5, className }: { progress?: number; 
               y1={a.y}
               x2={b.x}
               y2={b.y}
-              stroke={revealed ? "oklch(0.65 0.1 300 / 0.35)" : "oklch(1 0 0 / 0.08)"}
+              stroke={revealed ? "oklch(0.65 0.1 300 / 0.35)" : "oklch(var(--cs-ov) 0 0 / 0.08)"}
               strokeDasharray="2 4"
             />
           );

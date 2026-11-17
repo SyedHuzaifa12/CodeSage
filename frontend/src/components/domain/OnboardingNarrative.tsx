@@ -93,7 +93,7 @@ export function OnboardingNarrative({ repository }: { repository: Repository }) 
         <h1 className="cs-masthead mt-2">{repository.name}</h1>
         {repository.github_url && <p className="cs-monoline mt-2">{repository.github_url}</p>}
         {ws && (
-          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 font-mono text-[12px] text-text-secondary">
+          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 text-[13px] text-text-secondary">
             <span><b className="font-medium text-text-primary">{formatNumber(ws.total_files)}</b> files scanned</span>
             <span><b className="font-medium text-text-primary">{Object.keys(ws.language_distribution).length}</b> languages</span>
             <span><b className="font-medium text-text-primary">{ws.folder_count}</b> folders</span>
@@ -133,8 +133,8 @@ export function OnboardingNarrative({ repository }: { repository: Repository }) 
 
         {indexing && now - startedAt > SLOW_AFTER_MS && (
           <Notice tone="warn" title="Taking longer than expected" className="mt-6">
-            Large repositories can take several minutes. If the background task crashed, the repository stays in INDEXING — there is no
-            cancel endpoint yet, so check the backend logs.
+            Large repositories can take several minutes, and the free hosting tier is slow and sleeps when idle. If it still hasn&rsquo;t
+            finished after a while, delete this repository and try a smaller one.
           </Notice>
         )}
 
@@ -145,8 +145,8 @@ export function OnboardingNarrative({ repository }: { repository: Repository }) 
               Start indexing
             </Button>
             <p className="mt-3 text-small text-text-tertiary">
-              Runs one background task: Tree-sitter parse (Python, JavaScript, TypeScript, Java) → repository intelligence → chunking and local
-              embeddings.
+              Runs in the background: it parses the code (Python, JavaScript, TypeScript, Java), analyses the repository, then builds the search
+              index.
             </p>
             {trigger.isError && <ErrorPanel className="mt-3" error={trigger.error} />}
           </div>
@@ -183,7 +183,7 @@ export function OnboardingNarrative({ repository }: { repository: Repository }) 
           </Notice>
         )}
 
-        <p className="cs-monoline mt-9">Overview and Explorer are viewable now · Ask, Search, Graph and Reports unlock when indexing finishes</p>
+        <p className="mt-9 text-small text-text-tertiary">Overview and Explorer are viewable now · Ask, Search, Graph and Reports unlock when indexing finishes</p>
         {cloned && (
           <Link href={`/r/${repository.id}/explorer`} className="cs-link mt-3">
             Browse the file tree <ArrowRight size={13} aria-hidden="true" />

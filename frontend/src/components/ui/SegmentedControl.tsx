@@ -22,7 +22,7 @@ export function SegmentedControl<T extends string>({
     <div
       role="radiogroup"
       aria-label={aria["aria-label"]}
-      className={cn("flex rounded-pill bg-white/[0.04] p-0.5", className)}
+      className={cn("flex rounded-pill bg-[oklch(var(--cs-ov)_0_0/0.05)] p-0.5", className)}
     >
       {options.map((opt) => {
         const active = opt.value === value;

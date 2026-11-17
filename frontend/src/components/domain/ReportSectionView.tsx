@@ -154,7 +154,7 @@ export function ReportSectionView({
       )}
       {ai ? (
         <div className="cs-voice mt-3 rounded-r-[10px] bg-[linear-gradient(90deg,oklch(0.75_0.13_300/0.065),transparent_75%)] py-4 pr-5">
-          <p className="font-display text-[17.5px] italic leading-[1.7] text-text-primary">{text}</p>
+          <p className="font-display font-semibold text-[17.5px] leading-[1.7] text-text-primary">{text}</p>
         </div>
       ) : (
         <p className={cn("mt-3 max-w-[66ch] break-words text-[14px] leading-[1.75] text-[oklch(0.76_0.01_280)]")}>{text}</p>

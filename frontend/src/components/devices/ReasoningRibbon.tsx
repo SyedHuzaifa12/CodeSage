@@ -35,7 +35,7 @@ export function ReasoningRibbon({
   return (
     <ol
       className={cn(
-        "relative m-0 list-none p-0 before:absolute before:bg-[linear-gradient(180deg,oklch(1_0_0/0.2),oklch(1_0_0/0.04))]",
+        "relative m-0 list-none p-0 before:absolute before:bg-[linear-gradient(180deg,oklch(var(--cs-ov)_0_0/0.2),oklch(var(--cs-ov)_0_0/0.04))]",
         vertical ? "flex flex-col gap-5 pt-1 before:bottom-3.5 before:left-[5px] before:top-3 before:w-px" : "flex flex-wrap gap-x-4 gap-y-2 before:left-1.5 before:right-1.5 before:top-1.5 before:h-px",
         className,
       )}
@@ -60,7 +60,7 @@ export function ReasoningRibbon({
             />
             <span
               className={cn(
-                "font-mono text-[9.5px] font-medium uppercase leading-[1.3] tracking-[0.09em] text-text-tertiary transition-colors",
+                "text-[11.5px] font-medium leading-[1.3] text-text-tertiary transition-colors",
                 state === "active" && "text-violet",
                 (state === "done" || state === "skipped") && "text-text-secondary",
               )}

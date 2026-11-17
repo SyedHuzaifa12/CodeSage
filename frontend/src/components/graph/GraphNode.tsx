@@ -75,7 +75,7 @@ export function CsGraphNode({ data }: NodeProps) {
               : d.hotspot
                 ? "radial-gradient(circle at 35% 30%, oklch(0.46 0.1 300), oklch(0.25 0.06 300))"
                 : "radial-gradient(circle at 35% 30%, oklch(0.32 0.014 280), oklch(0.2 0.01 280))",
-            borderColor: d.orphan ? "var(--cs-text-tertiary)" : "oklch(1 0 0 / 0.3)",
+            borderColor: d.orphan ? "var(--cs-text-tertiary)" : "oklch(var(--cs-ov) 0 0 / 0.3)",
             borderStyle: d.orphan ? "dashed" : "solid",
           }}
           aria-hidden="true"
@@ -119,7 +119,7 @@ export function CsGraphEdge({ id, sourceX, sourceY, targetX, targetY, data, mark
   const ty = targetY - uy * (d.targetRadius + 5);
   const mx = (sx + tx) / 2 - uy * d.bend;
   const my = (sy + ty) / 2 + ux * d.bend;
-  const stroke = d.cycle ? "var(--cs-danger)" : d.active ? "var(--cs-accent-violet)" : "oklch(1 0 0 / 0.2)";
+  const stroke = d.cycle ? "var(--cs-danger)" : d.active ? "var(--cs-accent-violet)" : "oklch(var(--cs-ov) 0 0 / 0.2)";
   return (
     <BaseEdge
       id={id}

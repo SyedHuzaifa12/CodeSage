@@ -1,33 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, Info, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Copy, FileCode2, Info, RefreshCw } from "lucide-react";
 import { AnswerProse } from "@/components/ask/AnswerProse";
-import { STAGE_DESCRIPTIONS, loc } from "@/components/ask/EvidenceRail";
-import { EvidenceTrail } from "@/components/devices/EvidenceTrail";
-import { ReasoningRibbon, type StageState } from "@/components/devices/ReasoningRibbon";
+import { loc } from "@/components/ask/EvidenceRail";
+import { ThinkingSteps } from "@/components/ask/ThinkingSteps";
+import { TopologyMark } from "@/components/devices/TopologyMark";
 import { VerificationBadge } from "@/components/domain/GroundingBadges";
 import { Button } from "@/components/ui/Button";
 import { Notice } from "@/components/state/StateVocabulary";
 import { plainText } from "@/lib/answerFormat";
 import { ApiError } from "@/lib/api/client";
 import type { AskTurn } from "@/lib/askSession";
-import { mapStageLatencyToRibbon, RIBBON_STAGE_ORDER, ribbonOverheadMs, type RibbonStageKey } from "@/lib/reasoningRibbon";
-import type { AskResponseData } from "@/lib/types/ai";
+import { ribbonOverheadMs } from "@/lib/reasoningRibbon";
+import type { AskResponseData, Citation } from "@/lib/types/ai";
 import { cn } from "@/lib/utils";
-
-function stageStates(turn: AskTurn): Record<RibbonStageKey, StageState> {
-  const out = {} as Record<RibbonStageKey, StageState>;
-  RIBBON_STAGE_ORDER.forEach((k, i) => {
-    if (turn.status === "done" || turn.status === "revealing") out[k] = "done";
-    else if (turn.status === "error") out[k] = i < turn.stage ? "done" : "pending";
-    else out[k] = i < turn.stage ? "done" : i === turn.stage ? "active" : "pending";
-  });
-  if (turn.response && turn.response.metadata.stage_latency_ms.llm_ms === 0 && !turn.response.metadata.cache_hit) {
-    out.reason = "skipped";
-  }
-  return out;
-}
 
 const SEGMENTS: { key: string; label: string; color: string; ms: (r: AskResponseData) => number }[] = [
   { key: "intent", label: "intent", color: "var(--cs-text-tertiary)", ms: (r) => r.metadata.stage_latency_ms.intent_ms },
@@ -43,7 +30,7 @@ function Disclosure({ res }: { res: AskResponseData }) {
   const L = m.stage_latency_ms;
   const total = SEGMENTS.reduce((a, s) => a + s.ms(res), 0) || 1;
   return (
-    <div className="cs-panel cs-fade-in mt-3.5 px-[18px] py-4">
+    <div className="cs-panel cs-fade-in mt-3 px-[18px] py-4">
       <dl className="cs-kv">
         <dt>intent</dt>
         <dd>{m.intent}</dd>
@@ -65,8 +52,7 @@ function Disclosure({ res }: { res: AskResponseData }) {
         )}
       </dl>
       {m.cache_hit ? (
-        // On a cache hit the backend's per-stage breakdown belongs to the
-        // original generation, not this fast response — hide it (known limitation L6).
+        // On a cache hit the backend's per-stage breakdown belongs to the original generation, not this fast response.
         <p className="mt-3 text-small text-text-tertiary">Answered from the 30-minute answer cache. Per-stage timings are hidden because they belong to the original run.</p>
       ) : (
         <>
@@ -85,7 +71,7 @@ function Disclosure({ res }: { res: AskResponseData }) {
           </div>
         </>
       )}
-      <p className="cs-mono-label mt-4">Verification</p>
+      <p className="mt-4 text-small font-medium text-text-tertiary">Verification</p>
       <ul className="cs-reasons mt-2">
         {res.verification.reasons.map((r) => (
           <li key={r}>{r}</li>
@@ -99,11 +85,97 @@ function Disclosure({ res }: { res: AskResponseData }) {
   );
 }
 
+/** Copies text, falling back to a hidden textarea where the async clipboard API is unavailable (older browsers, http). */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+const actionClass =
+  "inline-flex h-8 items-center gap-1.5 rounded-[8px] px-2.5 text-[12.5px] font-medium text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:outline-2";
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return (
+    <button
+      type="button"
+      className={actionClass}
+      onClick={async () => {
+        if (await copyText(text)) {
+          setCopied(true);
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => setCopied(false), 1800);
+        }
+      }}
+    >
+      {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+      <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
+    </button>
+  );
+}
+
+const VISIBLE_SOURCES = 4;
+
+function SourceChip({
+  c,
+  index,
+  active,
+  onCite,
+  onHover,
+}: {
+  c: Citation;
+  index: number;
+  active: boolean;
+  onCite: (i: number) => void;
+  onHover: (i: number | null) => void;
+}) {
+  // Two path segments, not one: a project often has several files with the same name (__init__.py, index.ts).
+  const name = c.file_path.split("/").slice(-2).join("/");
+  const lines = c.start_line ? `:${c.start_line}${c.end_line && c.end_line !== c.start_line ? `–${c.end_line}` : ""}` : "";
+  return (
+    <button
+      type="button"
+      title={loc(c)}
+      onClick={() => onCite(index)}
+      onMouseEnter={() => onHover(index)}
+      onMouseLeave={() => onHover(null)}
+      onFocus={() => onHover(index)}
+      onBlur={() => onHover(null)}
+      aria-label={`Source ${index + 1}: ${loc(c)}${index === 0 ? " (primary)" : ""}`}
+      className={cn(
+        "inline-flex max-w-full items-center gap-2 rounded-[8px] border bg-surface-1 px-2.5 py-1.5 text-left text-[12.5px] shadow-sm transition-colors hover:bg-surface-2",
+        active || index === 0 ? "border-[var(--cs-violet-line)]" : "border-border-strong",
+      )}
+    >
+      <FileCode2 size={14} strokeWidth={1.7} className={cn("flex-none", index === 0 ? "text-violet" : "text-text-tertiary")} aria-hidden="true" />
+      <span className="truncate font-medium text-text-primary">{name}</span>
+      {lines && <span className="flex-none font-mono text-[11.5px] text-text-tertiary">{lines}</span>}
+      {index === 0 && <span className="flex-none rounded bg-[var(--cs-violet-tint)] px-1.5 py-px text-[10.5px] font-semibold text-violet">Primary</span>}
+    </button>
+  );
+}
+
 /**
- * One Ask turn (Design System §16): no chat bubbles. The question is a
- * right-set italic line; CodeSage's answer is prose behind the violet
- * voice rule, with the Reasoning Ribbon beside it and every citation
- * linked to the evidence rail.
+ * One exchange in the conversation: the user's question as a bubble on the right, CodeSage's answer on the left with
+ * its sources, verification, and actions beneath. While it works it shows the stages it is going through.
  */
 export function AskTurnView({
   turn,
@@ -123,64 +195,44 @@ export function AskTurnView({
   onFollowUp: (q: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const res = turn.response;
-  const states = stageStates(turn);
-  const ms = res && !res.metadata.cache_hit ? mapStageLatencyToRibbon(res.metadata.stage_latency_ms) : undefined;
   const status = res?.verification.status;
   const muted = status === "contradicted";
   const ev = res?.evidence ?? [];
   const hint =
     status === "insufficient_evidence"
-      ? "Name a specific file, symbol or module"
+      ? "Try naming a specific file, symbol or module."
       : status === "contradicted"
-        ? "Ask about a more specific file, symbol or module"
+        ? "Try asking about a more specific file, symbol or module."
         : null;
   const followUps =
     status === "supported" || status === "partially_supported"
-      ? (res?.relevant_files ?? []).slice(0, 2).map((f) => `Explain ${f}`).filter((q) => q.toLowerCase() !== turn.question.toLowerCase())
+      ? (res?.relevant_files ?? []).slice(0, 3).map((f) => `Explain ${f}`).filter((q) => q.toLowerCase() !== turn.question.toLowerCase())
       : [];
   const err = turn.error;
+  const sources = showAll ? ev : ev.slice(0, VISIBLE_SOURCES);
 
   return (
-    <article className="mt-11 scroll-mt-5 first:mt-7" aria-label={`Question: ${turn.question}`}>
-      <div className="flex flex-col items-end gap-1.5 text-right">
-        <span className="cs-mono-label inline-flex items-center gap-2.5 before:inline-block before:h-px before:w-5 before:bg-border-strong">Question</span>
-        <p className="max-w-[52ch] font-display text-[19px] italic leading-[1.42] text-text-primary sm:text-[21px]">{turn.question}</p>
+    <article className="mt-8 scroll-mt-5 first:mt-2" aria-label={`Question: ${turn.question}`}>
+      <div className="flex justify-end">
+        <p className="max-w-[88%] whitespace-pre-wrap break-words rounded-[18px] rounded-br-[6px] border border-border-subtle bg-surface-3 px-4 py-2.5 text-[15px] leading-[1.55] text-text-primary sm:max-w-[80%]">
+          {turn.question}
+        </p>
       </div>
-      <div className="mt-5 grid grid-cols-1 gap-3.5 sm:grid-cols-[96px_minmax(0,1fr)]">
-        <ReasoningRibbon
-          stageStates={states}
-          stageMs={ms}
-          finalStatus={status}
-          cached={res?.metadata.cache_hit}
-          className="hidden sm:flex"
-        />
-        <ReasoningRibbon
-          stageStates={states}
-          stageMs={ms}
-          finalStatus={status}
-          cached={res?.metadata.cache_hit}
-          orientation="horizontal"
-          className="sm:hidden"
-        />
-        <div className="cs-voice min-w-0">
-          {turn.status === "thinking" && (
-            <div role="status">
-              <div className="flex items-center gap-2.5 font-mono text-[12px] text-violet">
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-current border-r-transparent" aria-hidden="true" />
-                {STAGE_DESCRIPTIONS[Math.min(turn.stage, 3)]}
-              </div>
-              <div className="cs-skel mt-4 h-3.5 w-[92%]" />
-              <div className="cs-skel mt-2 h-3.5 w-[78%]" />
-              <div className="cs-skel mt-2 h-3.5 w-[60%]" />
-              <button onClick={onCancel} className="cs-disclosure-btn mt-3">
-                cancel
-              </button>
-            </div>
-          )}
+
+      <div className="mt-5 flex gap-3.5">
+        <span className="mt-0.5 grid h-8 w-8 flex-none place-items-center rounded-full border border-border-subtle bg-surface-1 shadow-sm" aria-hidden="true">
+          <TopologyMark variant="mark" size={18} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="mb-1.5 text-[13px] font-semibold text-text-primary">CodeSage</p>
+
+          {turn.status === "thinking" && <ThinkingSteps stage={turn.stage} startedAt={turn.askedAt} onCancel={onCancel} />}
+
           {turn.status === "error" && err && (
             <Notice
-              tone="bad"
+              tone={err.message === "Cancelled." ? "info" : "bad"}
               title={
                 err instanceof ApiError
                   ? err.status === 504
@@ -191,22 +243,25 @@ export function AskTurnView({
                         ? "The knowledge index isn't ready"
                         : "The AI pipeline failed"
                   : err.message === "Cancelled."
-                    ? "Cancelled"
+                    ? "Stopped"
                     : "Something went wrong answering this question"
               }
               actions={
                 <Button size="sm" variant="secondary" onClick={onRetry}>
                   <RefreshCw size={13} aria-hidden="true" />
-                  Retry
+                  {err.message === "Cancelled." ? "Ask again" : "Retry"}
                 </Button>
               }
             >
-              <div className="cs-errmono">
-                {err instanceof ApiError && err.status ? `HTTP ${err.status} · ` : ""}
-                {err.message}
-              </div>
+              {err.message !== "Cancelled." && (
+                <div className="cs-errmono">
+                  {err instanceof ApiError && err.status ? `HTTP ${err.status} · ` : ""}
+                  {err.message}
+                </div>
+              )}
             </Notice>
           )}
+
           {turn.status === "revealing" && (
             <div className={cn("cs-prose whitespace-pre-line", muted && "cs-prose-muted")} aria-busy="true">
               {plainText(turn.partial)}
@@ -215,70 +270,71 @@ export function AskTurnView({
               </span>
             </div>
           )}
+
           {turn.status === "done" && res && (
             <>
               <AnswerProse text={res.answer} evidence={ev} hovered={hovered} onHover={onHover} onCite={onCite} muted={muted} />
-              {ev[0] && (
-                <div
-                  className="-ml-3 mt-[18px] rounded-[8px] bg-[linear-gradient(90deg,oklch(0.75_0.13_300/0.06),transparent_75%)] px-3 py-2.5"
-                  onMouseEnter={() => onHover(0)}
-                  onMouseLeave={() => onHover(null)}
-                >
-                  <EvidenceTrail primary>
-                    <button className="text-left text-text-primary hover:text-[var(--cs-accent-violet-hover)]" onClick={() => onCite(0)} aria-label={`Primary evidence ${loc(ev[0])}`}>
-                      {loc(ev[0])}
-                    </button>{" "}
-                    <span className="text-text-tertiary">· primary</span>
-                  </EvidenceTrail>
+
+              {ev.length > 0 ? (
+                <div className="mt-5">
+                  <p className="mb-2 text-[12.5px] font-medium text-text-tertiary">Sources ({ev.length})</p>
+                  <div className="flex flex-wrap gap-2">
+                    {sources.map((c, i) => (
+                      <SourceChip key={`${c.file_path}-${i}`} c={c} index={i} active={hovered === i} onCite={onCite} onHover={onHover} />
+                    ))}
+                    {ev.length > VISIBLE_SOURCES && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAll((v) => !v)}
+                        className="inline-flex items-center rounded-[8px] px-2.5 py-1.5 text-[12.5px] font-medium text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
+                      >
+                        {showAll ? "Show fewer" : `+${ev.length - VISIBLE_SOURCES} more`}
+                      </button>
+                    )}
+                  </div>
                 </div>
+              ) : (
+                <p className="mt-4 text-small text-text-tertiary">No citations — nothing in the index cleared the relevance floor.</p>
               )}
-              {ev.length > 1 && (
-                <div className="mt-2.5 flex flex-wrap gap-x-3.5 gap-y-1 pl-[11px]">
-                  {ev.slice(1).map((c, j) => (
-                    <button
-                      key={`${c.file_path}-${j}`}
-                      onClick={() => onCite(j + 1)}
-                      onMouseEnter={() => onHover(j + 1)}
-                      onMouseLeave={() => onHover(null)}
-                      className={cn(
-                        "break-all rounded text-left font-mono text-[11.5px] transition-colors",
-                        hovered === j + 1 ? "text-text-primary" : "text-text-tertiary hover:text-text-primary",
-                      )}
-                    >
-                      <sup className="mr-0.5 text-[9px] text-violet">{j + 2}</sup>
-                      {loc(c)}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {ev.length === 0 && <p className="mt-3 text-small text-text-tertiary">No citations — nothing in the index cleared the relevance floor.</p>}
-              <div className="mt-[18px] flex flex-wrap items-center gap-x-[18px] gap-y-3 border-t border-border-subtle pt-4">
+
+              <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
                 <VerificationBadge status={res.verification.status} />
-                <span className="text-small text-text-secondary">{res.verification.reasons[0]}</span>
-                <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="cs-disclosure-btn">
-                  how this was answered <ChevronDown size={12} aria-hidden="true" />
+                {res.verification.reasons[0] && <span className="text-[13px] text-text-secondary">{res.verification.reasons[0]}</span>}
+              </div>
+
+              <div className="-ml-2.5 mt-2.5 flex flex-wrap items-center gap-0.5">
+                <CopyButton text={plainText(res.answer)} />
+                <button type="button" className={actionClass} onClick={onRetry}>
+                  <RefreshCw size={14} aria-hidden="true" />
+                  Regenerate
+                </button>
+                <button type="button" className={actionClass} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+                  <Info size={14} aria-hidden="true" />
+                  How this was answered
+                  <ChevronDown size={13} className={cn("transition-transform", open && "rotate-180")} aria-hidden="true" />
                 </button>
               </div>
               {open && <Disclosure res={res} />}
+
               {(hint || followUps.length > 0) && (
-                <div className="mt-4 flex flex-wrap items-center gap-2">
+                <div className="mt-4 flex flex-col gap-2.5">
                   {hint && (
-                    <span className="inline-flex items-center gap-1.5 font-mono text-[11.5px] text-text-secondary">
-                      <Info size={13} aria-hidden="true" />
+                    <p className="inline-flex items-center gap-1.5 text-[13px] text-text-secondary">
+                      <Info size={14} aria-hidden="true" />
                       {hint}
-                    </span>
+                    </p>
                   )}
                   {followUps.length > 0 && (
-                    <>
-                      <span className="cs-tag text-text-tertiary" title="Generated from the answer's relevant files — the backend returns no suggestions">
-                        Suggested
-                      </span>
-                      {followUps.map((q) => (
-                        <button key={q} className="cs-qchip" onClick={() => onFollowUp(q)}>
-                          {q}
-                        </button>
-                      ))}
-                    </>
+                    <div>
+                      <p className="mb-2 text-[12.5px] font-medium text-text-tertiary">Related questions</p>
+                      <div className="flex flex-wrap gap-2">
+                        {followUps.map((q) => (
+                          <button key={q} type="button" className="cs-qchip" onClick={() => onFollowUp(q)}>
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

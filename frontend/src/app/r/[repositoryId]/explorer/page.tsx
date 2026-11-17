@@ -225,7 +225,7 @@ export default function ExplorerPage() {
             <button className="cs-disclosure-btn -ml-1 mb-2 md:hidden" onClick={() => setMobileDetail(false)}>
               <ArrowLeft size={13} aria-hidden="true" /> File tree
             </button>
-            <h1 className="font-display text-[26px] italic leading-tight text-text-primary">{selected.name}</h1>
+            <h1 className="font-display font-semibold text-[26px] leading-tight text-text-primary">{selected.name}</h1>
             <p className="cs-monoline mt-1">{selected.path}</p>
             <div className="mt-3 flex flex-wrap gap-1.5">
               <span className="cs-badge">{selected.language ?? "not classified"}</span>

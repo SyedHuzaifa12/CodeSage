@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Info, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { TopologyMark } from "@/components/devices/TopologyMark";
 import { RepoStatusChip } from "@/components/domain/RepoStatusChip";
 import { CommandPalette } from "@/components/nav/CommandPalette";
 import { RepoSwitcher } from "@/components/nav/RepoSwitcher";
+import { ThemeToggle } from "@/components/nav/ThemeToggle";
 import type { Repository } from "@/lib/types/repository";
 
 /** Glass top bar: identity, ⌘K palette trigger, index status, repository switcher. */
@@ -31,7 +32,7 @@ export function TopBar({ repository }: { repository?: Repository }) {
         <span className="transition-transform duration-panel ease-cs group-hover:-rotate-6">
           <TopologyMark variant="mark" size={24} />
         </span>
-        <span className="hidden font-mono text-[11.5px] font-medium tracking-[0.2em] text-text-primary sm:inline">CODESAGE</span>
+        <span className="hidden text-[15.5px] font-semibold tracking-tight text-text-primary sm:inline">CodeSage</span>
       </Link>
       <div className="flex-1" />
       <button
@@ -40,7 +41,7 @@ export function TopBar({ repository }: { repository?: Repository }) {
         className="flex h-[34px] items-center gap-2.5 rounded-[8px] px-2 text-[12.5px] text-text-tertiary transition-colors hover:text-text-secondary md:min-w-[230px] md:border md:border-border-subtle md:px-3 md:hover:border-border-strong"
       >
         <Search size={15} aria-hidden="true" />
-        <span className="hidden md:inline">Jump to a file, symbol or page</span>
+        <span className="hidden md:inline">Search files, symbols and pages</span>
         <kbd className="ml-auto hidden rounded border border-border-strong px-1.5 py-0.5 font-mono text-[10px] text-text-tertiary md:inline">
           ⌘K
         </kbd>
@@ -59,12 +60,11 @@ export function TopBar({ repository }: { repository?: Repository }) {
       )}
       <Link
         href="/about"
-        aria-label="How CodeSage works"
-        title="How CodeSage works"
-        className="hidden h-9 w-9 place-items-center rounded-[8px] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary sm:grid"
+        className="hidden h-9 items-center rounded-[8px] px-3 text-[13.5px] font-medium text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary sm:inline-flex"
       >
-        <Info size={17} strokeWidth={1.5} aria-hidden="true" />
+        How it works
       </Link>
+      <ThemeToggle />
       <UserMenu />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} repository={repository} />
     </header>

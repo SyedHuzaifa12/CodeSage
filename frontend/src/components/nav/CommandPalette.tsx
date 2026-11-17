@@ -122,7 +122,7 @@ export function CommandPalette({
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="fixed inset-0 z-40 bg-[oklch(0.1_0.01_280/0.72)] backdrop-blur-[3px] data-[state=open]:animate-cs-fade-in" />
         <RadixDialog.Content
-          className="cs-glass fixed left-1/2 top-[12vh] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-[14px] border border-border-strong shadow-[inset_0_1px_0_oklch(1_0_0/0.07)] focus:outline-none"
+          className="cs-glass fixed left-1/2 top-[12vh] z-50 w-[min(640px,calc(100vw-24px))] -translate-x-1/2 overflow-hidden rounded-[14px] border border-border-strong shadow-[inset_0_1px_0_oklch(var(--cs-ov)_0_0/0.07)] focus:outline-none"
           aria-describedby={undefined}
         >
           <RadixDialog.Title className="sr-only">Command palette</RadixDialog.Title>
@@ -142,7 +142,7 @@ export function CommandPalette({
               aria-expanded="true"
               aria-controls="cs-palette-list"
               aria-activedescendant={`cs-pi-${safeSel}`}
-              className="h-[58px] min-w-0 flex-1 bg-transparent font-display text-[19px] italic text-text-primary !outline-none placeholder:text-text-tertiary"
+              className="h-[58px] min-w-0 flex-1 bg-transparent font-display font-semibold text-[19px] text-text-primary !outline-none placeholder:text-text-tertiary"
             />
           </div>
           <div ref={listRef} id="cs-palette-list" role="listbox" className="cs-scrollbar max-h-[min(440px,58vh)] overflow-y-auto p-1.5">
@@ -161,7 +161,7 @@ export function CommandPalette({
                     aria-disabled={!it.href || undefined}
                     onMouseEnter={() => setSel(i)}
                     onClick={() => go(i)}
-                    className="flex min-h-[38px] w-full items-center gap-3 rounded-[8px] px-3 py-2 text-left text-[13px] text-text-secondary aria-disabled:opacity-45 aria-selected:bg-[linear-gradient(90deg,oklch(0.75_0.13_300/0.12),oklch(1_0_0/0.03))] aria-selected:text-text-primary aria-selected:shadow-[inset_2px_0_0_var(--cs-accent-violet)]"
+                    className="flex min-h-[38px] w-full items-center gap-3 rounded-[8px] px-3 py-2 text-left text-[13px] text-text-secondary aria-disabled:opacity-45 aria-selected:bg-[linear-gradient(90deg,oklch(0.75_0.13_300/0.12),oklch(var(--cs-ov)_0_0/0.03))] aria-selected:text-text-primary aria-selected:shadow-[inset_2px_0_0_var(--cs-accent-violet)]"
                   >
                     <span className="flex-none text-text-tertiary" aria-hidden="true">
                       {it.icon}

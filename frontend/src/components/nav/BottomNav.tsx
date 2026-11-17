@@ -2,21 +2,21 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Settings } from "lucide-react";
+import { NAV_ICONS } from "@/components/nav/NavRail";
 import { cn } from "@/lib/utils";
 
 /**
- * Mobile bottom nav (Design System §11/§16): a quiet mono label bar, not
- * icon buttons — the four highest-value destinations on a small screen
- * plus Explorer and Settings. Graph stays reachable from Overview's
- * hotspot links and the ⌘K palette.
+ * Mobile bottom nav: icon + label for the destinations that matter most on a small screen. Graph stays reachable
+ * from Overview and the search palette.
  */
 const MOBILE_ITEMS = [
-  { label: "overview", path: (id: string) => `/r/${id}` },
-  { label: "ask", path: (id: string) => `/r/${id}/ask` },
-  { label: "search", path: (id: string) => `/r/${id}/search` },
-  { label: "explorer", path: (id: string) => `/r/${id}/explorer` },
-  { label: "reports", path: (id: string) => `/r/${id}/reports` },
-  { label: "settings", path: (id: string) => `/r/${id}/settings` },
+  { label: "Overview", path: (id: string) => `/r/${id}` },
+  { label: "Ask", path: (id: string) => `/r/${id}/ask` },
+  { label: "Search", path: (id: string) => `/r/${id}/search` },
+  { label: "Explorer", path: (id: string) => `/r/${id}/explorer` },
+  { label: "Reports", path: (id: string) => `/r/${id}/reports` },
+  { label: "Settings", path: (id: string) => `/r/${id}/settings` },
 ];
 
 export function BottomNav({ repositoryId, ready }: { repositoryId: string; ready: boolean }) {
@@ -24,25 +24,28 @@ export function BottomNav({ repositoryId, ready }: { repositoryId: string; ready
   return (
     <nav
       aria-label="Repository sections"
-      className="flex h-[52px] flex-shrink-0 items-center justify-around border-t border-border-subtle bg-[var(--cs-glass)] font-mono text-[10px] backdrop-blur-md"
+      className="flex h-[58px] flex-shrink-0 items-stretch justify-around border-t border-border-subtle bg-[var(--cs-glass)] backdrop-blur-md"
     >
       {MOBILE_ITEMS.map((item) => {
         const href = item.path(repositoryId);
-        const active = pathname === href || (item.label !== "overview" && pathname?.startsWith(href));
-        const disabled = !ready && item.label !== "overview" && item.label !== "settings";
+        const active = pathname === href || (item.label !== "Overview" && pathname?.startsWith(href));
+        const disabled = !ready && item.label !== "Overview" && item.label !== "Settings";
+        const Icon = item.label === "Settings" ? Settings : NAV_ICONS[item.label];
         return (
           <Link
             key={item.label}
             href={disabled ? "#" : href}
             aria-disabled={disabled || undefined}
+            aria-current={active ? "page" : undefined}
             onClick={(e) => disabled && e.preventDefault()}
             className={cn(
-              "px-1.5 py-2",
-              disabled && "opacity-35",
-              active ? "border-b-[1.5px] border-violet text-violet" : "text-text-tertiary",
+              "flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[10.5px] font-medium",
+              disabled && "opacity-40",
+              active ? "text-violet" : "text-text-tertiary",
             )}
           >
-            {item.label}
+            {Icon && <Icon size={18} strokeWidth={1.7} aria-hidden="true" />}
+            <span className="truncate">{item.label}</span>
           </Link>
         );
       })}
