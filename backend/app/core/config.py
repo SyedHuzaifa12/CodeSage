@@ -541,6 +541,9 @@ class IngestionSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore", case_sensitive=False)
 
+    # Hard limit for one `git clone`; git is killed when it passes (a stalled download would otherwise hang the indexer).
+    clone_timeout_seconds: int = 600
+
     # Extra directory names to prune, beyond the built-in language/VCS/
     # tooling defaults in ``ingestion/utils.py`` (comma-separated).
     ingestion_extra_ignored_dirs: str = ""

@@ -1,6 +1,6 @@
 """Git operations and filesystem helpers for repository management.
 
-Thin wrapper around GitPython — clone only. No pull, no branch checkout,
+A thin wrapper around the ``git`` command — clone only. No pull, no branch checkout,
 no file parsing (that's Ingestion's job — CLAUDE.md §6).
 """
 from __future__ import annotations
@@ -8,12 +8,14 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
+import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from git import GitCommandError, Repo
+import httpx
 
 from app.repository.exceptions import InvalidRepositoryURLError, RepositoryCloneError
 
@@ -78,23 +80,101 @@ def local_clone_exists(local_path: Path) -> bool:
     return local_path.exists() and (local_path / ".git").exists()
 
 
-def clone_repository(github_url: str, local_path: Path) -> None:
-    """Shallow-clone a GitHub repository to a local path.
+DEFAULT_CLONE_TIMEOUT_SECONDS = 600.0
+
+# A transfer slower than this for this long is treated as stalled and aborted by git itself, so a dead
+# connection fails in a minute instead of hanging the (single-job) indexer until the hard timeout.
+_LOW_SPEED_LIMIT_BYTES_PER_SECOND = 10_000
+_LOW_SPEED_TIME_SECONDS = 60
+
+
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """Kill git and the helper processes it spawned (``git-remote-https``), not just the parent."""
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(process.pid, signal.SIGKILL)  # the clone runs in its own process group (see below)
+        else:
+            process.kill()  # Windows (development only)
+    except (ProcessLookupError, PermissionError, OSError):
+        process.kill()
+
+
+def clone_repository(github_url: str, local_path: Path, timeout_seconds: float = DEFAULT_CLONE_TIMEOUT_SECONDS) -> None:
+    """Shallow-clone a GitHub repository to a local path, with a hard time limit.
+
+    Without a limit one stalled or enormous download hangs forever: the indexer runs one job at a time,
+    keeps renewing its lease while it waits, and so every later repository queues behind it.
 
     Args:
         github_url: The validated source URL.
         local_path: Destination directory.
+        timeout_seconds: Hard limit for the whole clone; git is killed when it passes.
 
     Raises:
-        RepositoryCloneError: If GitPython fails to clone the repository.
-            Any partial clone directory is removed before raising.
+        RepositoryCloneError: If git fails, stalls, or runs out of time. Any partial clone
+            directory is removed before raising.
     """
     local_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "git",
+        "-c", f"http.lowSpeedLimit={_LOW_SPEED_LIMIT_BYTES_PER_SECOND}",
+        "-c", f"http.lowSpeedTime={_LOW_SPEED_TIME_SECONDS}",
+        "clone", "--depth", "1", "--no-tags", "--quiet", "--", github_url, str(local_path),
+    ]
+    popen_options = {"start_new_session": True} if hasattr(os, "killpg") else {}
+    process = subprocess.Popen(
+        command, env={**os.environ, **_CLONE_ENV}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **popen_options
+    )
     try:
-        Repo.clone_from(github_url, local_path, depth=1, env=_CLONE_ENV, multi_options=["--no-tags"])
-    except GitCommandError as exc:
+        _, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        process.communicate()
         remove_local_clone(local_path)
-        raise RepositoryCloneError(f"Failed to clone '{github_url}': {exc}") from exc
+        raise RepositoryCloneError(
+            f"Cloning '{github_url}' was stopped after {int(timeout_seconds)} seconds: the repository is too large "
+            "or GitHub was too slow. Try a smaller repository."
+        ) from None
+    if process.returncode != 0:
+        remove_local_clone(local_path)
+        raise RepositoryCloneError(f"Failed to clone '{github_url}': {(stderr or '').strip()[-400:]}")
+
+
+# GitHub's reported repository size covers the whole history; a shallow clone is typically a fraction of it.
+GITHUB_API_TIMEOUT_SECONDS = 8.0
+
+
+def fetch_remote_size_kb(github_url: str, *, client: Optional[httpx.Client] = None) -> Optional[int]:
+    """Ask GitHub how big a repository is, without downloading it.
+
+    Lets a guest's oversized repository be refused in a second instead of after a long download. Best effort:
+    any failure (rate limit, private repository, network) returns ``None`` and the clone proceeds normally.
+
+    Args:
+        github_url: A validated ``https://github.com/<owner>/<repo>`` URL.
+        client: Optional HTTP client (tests inject a mock transport).
+
+    Returns:
+        The repository's size in kilobytes, or ``None`` if it could not be determined.
+    """
+    try:
+        owner, repo = parse_github_url(github_url)
+        owns_client = client is None
+        client = client or httpx.Client(timeout=GITHUB_API_TIMEOUT_SECONDS)
+        try:
+            response = client.get(
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "codesage"},
+            )
+        finally:
+            if owns_client:
+                client.close()
+        if response.status_code != 200:
+            return None
+        size = response.json().get("size")
+        return int(size) if isinstance(size, (int, float)) else None
+    except Exception:  # noqa: BLE001 -- purely an optimisation; never let it block an import
+        return None
 
 
 def measure_tree(local_path: Path, max_files: Optional[int], max_bytes: Optional[int]) -> TreeMeasure:
